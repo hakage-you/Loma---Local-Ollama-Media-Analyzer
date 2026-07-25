@@ -2,7 +2,7 @@
   "app": {
     "title": "Loma",
     "subtitle": "Local Ollama Media Analyzer",
-    "version": "0.2.0"
+    "version": "0.2.1"
   },
   "search": {
     "placeholder_empty": "Search tags by English or Japanese (e.g. #cat, #sunset)...",

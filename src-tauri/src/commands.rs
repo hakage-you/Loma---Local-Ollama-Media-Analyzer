@@ -352,6 +352,12 @@ pub async fn start_scan(
 pub async fn cancel_scan(scan_state: State<'_, ScanState>) -> Result<(), String> {
     scan_state.cancel_flag.store(true, Ordering::Relaxed);
     scan_state.pause_flag.store(false, Ordering::Relaxed);
+
+    // バックグラウンドタスクが完全に停止して TaskGuard (is_running) が解放されるまで確実に待機
+    while scan_state.is_running.load(Ordering::Relaxed) {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
     Ok(())
 }
 

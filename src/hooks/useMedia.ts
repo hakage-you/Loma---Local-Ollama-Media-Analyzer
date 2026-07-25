@@ -111,13 +111,17 @@ export function useMedia() {
 
   const cancelScan = async () => {
     try {
+      if (progress) {
+        setProgress((prev) => (prev ? { ...prev, status: 'Canceling...' } : null));
+      }
       await invoke('cancel_scan');
+    } catch (e) {
+      console.error('Failed to cancel scan:', e);
+    } finally {
       setScanning(false);
       setProgress(null);
       await fetchMedia(); // アクティブフィルターを引き継いで更新
       await fetchMasterData();
-    } catch (e) {
-      console.error('Failed to cancel scan:', e);
     }
   };
 

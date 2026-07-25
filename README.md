@@ -143,7 +143,7 @@ cargo test
 
 ## 4. その他
 
-- **アプリケーションバージョン**: `0.2.0`
+- **アプリケーションバージョン**: `0.2.1`
 - **作成者**: `@hakageyou`
 - **公式リンク**:
   - **X (旧Twitter)**: [https://x.com/hakage_you](https://x.com/hakage_you)

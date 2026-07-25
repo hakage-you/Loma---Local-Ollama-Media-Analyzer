@@ -978,7 +978,12 @@ pub async fn run_scan_and_batch(
                 // 外部LLM利用時は無料枠・レート制限対策としてリクエスト間に短いペーシング待機 (3秒) を挿入
                 if factory_config.provider.to_lowercase() != "ollama" {
                     crate::logger::log_info("[Pacing] Waiting 3s before next API request...");
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    for _ in 0..30 {
+                        if cancel_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
                 }
             }
 
@@ -1014,6 +1019,12 @@ pub async fn run_scan_and_batch(
                 }
             }
         }
+    }
+
+    if cancel_flag.load(Ordering::Relaxed) {
+        let _ = unload_ollama_model(&ollama_url, &ollama_model).await;
+        crate::logger::log_info("Batch process cancelled. Exiting clean.");
+        return Ok(());
     }
 
     // 未使用（どのメディアにも紐付いていない）自由記述タグを自動クリーンアップ
