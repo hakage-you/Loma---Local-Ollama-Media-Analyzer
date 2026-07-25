@@ -1,0 +1,3 @@
+# Ignore all contents in test_assets except this .gitignore
+*
+!.gitignore

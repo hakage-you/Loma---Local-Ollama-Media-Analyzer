@@ -1,0 +1,450 @@
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { MediaItem, TagItem } from '../types';
+import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2 } from 'lucide-react';
+import { useTranslation } from '../contexts/I18nContext';
+
+interface MediaDetailModalProps {
+  item: MediaItem | null;
+  allTags?: TagItem[];
+  isScanning?: boolean;
+  onClose: () => void;
+  onOpenFile: (filePath: string) => void;
+  onOpenFolder: (filePath: string) => void;
+  onRetry: (mediaId: number) => void;
+  onReanalyzeSingleMedia?: (mediaId: number) => void;
+  onCustomAnalyzeVideo?: (mediaId: number, timestampSeconds: number) => void;
+  onCancelScan?: () => void;
+  onSelectTagFilter?: (tagName: string) => void;
+  onAddTagToMedia?: (mediaId: number, tagName: string, tagNameJa?: string) => Promise<void>;
+  onRemoveTagFromMedia?: (mediaId: number, tagId: number) => Promise<void>;
+}
+
+export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
+  item,
+  allTags,
+  isScanning,
+  onClose,
+  onOpenFile,
+  onOpenFolder,
+  onRetry,
+  onReanalyzeSingleMedia,
+  onCustomAnalyzeVideo,
+  onCancelScan,
+  onSelectTagFilter,
+  onAddTagToMedia,
+  onRemoveTagFromMedia,
+}) => {
+  const { t } = useTranslation();
+  const [videoError, setVideoError] = React.useState(false);
+  const [manualTime, setManualTime] = React.useState('5.0');
+  const videoRef = React.useRef<HTMLVideoElement>(null);
+
+  // Tag editing state & auto-suggest (English & Japanese)
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagNameJa, setNewTagNameJa] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSavingTag, setIsSavingTag] = useState(false);
+  const suggestBoxRef = useRef<HTMLDivElement>(null);
+
+  // High performance auto-suggest calculation (max 15 items)
+  const filteredSuggestions = useMemo(() => {
+    const enQuery = newTagName.trim().toLowerCase();
+    const jaQuery = newTagNameJa.trim().toLowerCase();
+    if ((!enQuery && !jaQuery) || !allTags || allTags.length === 0) return [];
+
+    const currentTagNames = new Set((item?.tags || []).map((t) => t.name.toLowerCase()));
+    const list: TagItem[] = [];
+
+    for (let i = 0; i < allTags.length; i++) {
+      const t = allTags[i];
+      if (!t || t.is_category) continue;
+      const nameMatch = enQuery ? t.name.toLowerCase().includes(enQuery) : false;
+      const jaMatch = jaQuery && t.name_ja ? t.name_ja.toLowerCase().includes(jaQuery) : false;
+      if ((nameMatch || jaMatch) && !currentTagNames.has(t.name.toLowerCase())) {
+        list.push(t);
+        if (list.length >= 15) break;
+      }
+    }
+    return list;
+  }, [newTagName, newTagNameJa, allTags, item?.tags]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (suggestBoxRef.current && !suggestBoxRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleAddTagSubmit = async (enName: string, jaName?: string) => {
+    const cleanEn = enName.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    const cleanJa = jaName?.trim();
+    if (!cleanEn || !item || !onAddTagToMedia) return;
+    setIsSavingTag(true);
+    try {
+      await onAddTagToMedia(item.id, cleanEn, cleanJa || undefined);
+      setNewTagName('');
+      setNewTagNameJa('');
+      setShowSuggestions(false);
+    } finally {
+      setIsSavingTag(false);
+    }
+  };
+
+  const handleSelectSuggestion = (sug: TagItem) => {
+    setNewTagName(sug.name);
+    setNewTagNameJa(sug.name_ja || '');
+    handleAddTagSubmit(sug.name, sug.name_ja || undefined);
+  };
+
+  const handleRemoveTagClick = async (tagName: string) => {
+    if (!item || !onRemoveTagFromMedia) return;
+    const found = allTags?.find((t) => t.name === tagName || (t.name_ja && t.name_ja === tagName));
+    if (!found) return;
+    setIsSavingTag(true);
+    try {
+      await onRemoveTagFromMedia(item.id, found.id);
+    } finally {
+      setIsSavingTag(false);
+    }
+  };
+
+  if (!item) return null;
+
+  const isVideo = /\.(mp4|webm|mov|mkv|avi|flv|wmv)$/i.test(item.file_path);
+  const fileSrc = convertFileSrc(item.file_path);
+  const imageSrc = item.thumbnail_path
+    ? convertFileSrc(item.thumbnail_path)
+    : fileSrc;
+
+  const fileName = item.file_path.split(/[/\\]/).pop() || '';
+  const fileSizeMB = (item.file_size / (1024 * 1024)).toFixed(2);
+
+  const handleCustomAnalyzeCurrentTime = () => {
+    if (!onCustomAnalyzeVideo) return;
+    let sec = 0;
+    if (isVideo && !videoError && videoRef.current) {
+      sec = videoRef.current.currentTime || 0;
+    } else {
+      sec = parseFloat(manualTime) || 0;
+    }
+    onCustomAnalyzeVideo(item.id, sec);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-in fade-in duration-200">
+      <div className="glass-panel w-full max-w-4xl max-h-[90vh] flex flex-col md:flex-row overflow-hidden rounded-2xl shadow-2xl border border-white/10">
+        {/* Left Preview */}
+        <div className="md:w-1/2 bg-black/90 flex flex-col items-center justify-center relative p-4 min-h-[340px]">
+          {isVideo && !videoError ? (
+            <video
+              ref={videoRef}
+              src={fileSrc}
+              controls
+              onError={() => setVideoError(true)}
+              className="max-h-[60vh] w-auto max-w-full object-contain rounded-lg shadow-lg"
+            />
+          ) : (
+            <div className="relative flex flex-col items-center justify-center w-full">
+              <img
+                src={imageSrc}
+                alt={fileName}
+                className="max-h-[60vh] w-auto max-w-full object-contain rounded-lg shadow-lg"
+              />
+              {isVideo && videoError && (
+                <div className="mt-2 px-3 py-1 bg-amber-950/80 border border-amber-500/40 rounded-lg text-[11px] text-amber-300 font-mono text-center">
+                  ⚠️ HTML5再生不可コーデック。下の秒数入力から時間指定可能です。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Right Info Panel */}
+        <div className="md:w-1/2 p-6 flex flex-col justify-between overflow-y-auto gap-4 bg-slate-900/60 select-none">
+          <div className="space-y-4">
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-base font-bold text-white break-all select-text" title={fileName}>
+                  {fileName}
+                </h2>
+                <div className="flex items-center gap-2 mt-1">
+                  {item.analysis_status === 'completed' && (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full text-xs font-semibold">
+                      <CheckCircle className="w-3.5 h-3.5" /> {t('sidebar.status_completed', '解析完了')}
+                    </span>
+                  )}
+                  {item.analysis_status === 'pending' && (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-full text-xs font-semibold">
+                      <Clock className="w-3.5 h-3.5 animate-pulse" /> {t('sidebar.status_pending', '未解析')}
+                    </span>
+                  )}
+                  {item.analysis_status === 'failed' && (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-full text-xs font-semibold">
+                      <AlertTriangle className="w-3.5 h-3.5" /> {t('sidebar.status_failed', '解析失敗')}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Tags & Categories Section */}
+            <div>
+              <h3 className="text-xs font-bold text-slate-300 mb-2 flex items-center gap-1.5">
+                <Tag className="w-3.5 h-3.5 text-indigo-400" />
+                {t('media_modal.tags_categories', 'タグ & カテゴリ')}
+              </h3>
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-2 bg-slate-950/40 rounded-xl border border-white/5">
+                  {/* Categories */}
+                  {item.categories && item.categories.map((cat) => (
+                    <button
+                      key={`cat-${cat}`}
+                      onClick={() => onSelectTagFilter && onSelectTagFilter(cat)}
+                      className="px-2.5 py-1 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-semibold hover:bg-indigo-500/30 transition cursor-pointer"
+                    >
+                      📁 {cat}
+                    </button>
+                  ))}
+                  {/* Tags */}
+                  {item.tags && item.tags.map((tItem, idx) => (
+                    <div
+                      key={`tag-${idx}-${tItem.name}`}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-800 text-slate-300 border border-white/10 rounded-lg text-xs font-medium hover:bg-slate-700 hover:text-white transition group"
+                    >
+                      <span
+                        onClick={() => onSelectTagFilter && onSelectTagFilter(tItem.name)}
+                        className="cursor-pointer hover:underline"
+                        title="Click to search tag in gallery"
+                      >
+                        {tItem.name_ja ? `${tItem.name_ja} (${tItem.name})` : tItem.name}
+                      </span>
+                      {onRemoveTagFromMedia && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveTagClick(tItem.name);
+                          }}
+                          disabled={isSavingTag}
+                          className="p-0.5 text-slate-400 hover:text-red-400 rounded transition cursor-pointer ml-0.5"
+                          title="Remove this tag from media"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {(!item.categories || item.categories.length === 0) && (!item.tags || item.tags.length === 0) && (
+                    <span className="text-xs text-slate-500 italic p-1">
+                      {t('media_modal.no_tags', 'タグが設定されていません')}
+                    </span>
+                  )}
+                </div>
+
+                {/* Free Text Add Tag Inputs (English & Japanese) with Auto-Suggest */}
+                {onAddTagToMedia && (
+                  <div className="relative pt-1" ref={suggestBoxRef}>
+                    <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
+                      {/* English Tag Name Input ([a-zA-Z0-9_-] only) */}
+                      <div className="relative flex-1 min-w-[110px]">
+                        <input
+                          type="text"
+                          value={newTagName}
+                          onChange={(e) => {
+                            const sanitized = e.target.value.replace(/[^a-zA-Z0-9_-]/g, '');
+                            setNewTagName(sanitized);
+                            setShowSuggestions(true);
+                          }}
+                          onFocus={() => setShowSuggestions(true)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddTagSubmit(newTagName, newTagNameJa);
+                            }
+                          }}
+                          placeholder={t('media_modal.tag_placeholder_en', '英語タグ (a-Z, _)')}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50 font-mono"
+                        />
+                      </div>
+
+                      {/* Japanese Translation Input */}
+                      <div className="relative flex-1 min-w-[110px]">
+                        <input
+                          type="text"
+                          value={newTagNameJa}
+                          onChange={(e) => {
+                            setNewTagNameJa(e.target.value);
+                            setShowSuggestions(true);
+                          }}
+                          onFocus={() => setShowSuggestions(true)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddTagSubmit(newTagName, newTagNameJa);
+                            }
+                          }}
+                          placeholder={t('media_modal.tag_placeholder_ja', '日本語訳 (例: 山脈)')}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
+                        />
+                        {isSavingTag && (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400 absolute right-2 top-2" />
+                        )}
+                      </div>
+
+                      <button
+                        onClick={() => handleAddTagSubmit(newTagName, newTagNameJa)}
+                        disabled={!newTagName.trim() || isSavingTag}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 cursor-pointer flex items-center gap-1 shrink-0 shadow"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>{t('media_modal.add_tag_btn', '追加')}</span>
+                      </button>
+                    </div>
+
+                    {/* Auto-suggest dropdown (Max 15 items high-performance list) */}
+                    {showSuggestions && filteredSuggestions.length > 0 && (
+                      <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-slate-900/95 backdrop-blur-md border border-indigo-500/40 rounded-xl shadow-2xl overflow-hidden max-h-48 overflow-y-auto divide-y divide-white/5 animate-in fade-in zoom-in-95 duration-100">
+                        {filteredSuggestions.map((sug) => (
+                          <div
+                            key={sug.id}
+                            onClick={() => handleSelectSuggestion(sug)}
+                            className="px-3 py-2 hover:bg-indigo-600/30 cursor-pointer transition flex items-center justify-between text-xs"
+                          >
+                            <span className="font-mono text-indigo-300 font-semibold">
+                              #{sug.name} {sug.name_ja ? `(${sug.name_ja})` : ''}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-sans">
+                              {sug.count ?? 0} media
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Metadata File Info */}
+            <div className="space-y-2 text-xs text-slate-300">
+              <div className="flex justify-between py-1 border-b border-white/5">
+                <span className="text-slate-400">{t('media_modal.file_size', 'ファイルサイズ')}:</span>
+                <span className="font-mono text-white">{fileSizeMB} MB</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-white/5">
+                <span className="text-slate-400">{t('media_modal.folder', '登録フォルダ')}:</span>
+                <span className="font-mono text-indigo-300 break-all">{item.parent_folder}</span>
+              </div>
+              <div className="text-slate-400 break-all font-mono text-[11px] bg-slate-950/50 p-2 rounded-lg border border-white/5 select-all">
+                {item.file_path}
+              </div>
+            </div>
+          </div>
+
+          {/* Custom Timestamp & Deep Analysis Panel for Videos */}
+          {isVideo && (
+            <div className="p-3 bg-indigo-950/40 border border-indigo-500/30 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
+                  {t('media_modal.video_time_thumbnail', '時間指定サムネイル変更 ＆ 高精度VLM解析')}
+                </span>
+                {videoError && (
+                  <div className="flex items-center gap-1 text-[11px] text-slate-300">
+                    <span>秒数指定:</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      value={manualTime}
+                      onChange={(e) => setManualTime(e.target.value)}
+                      className="w-16 px-1.5 py-0.5 bg-slate-900 border border-white/20 rounded text-center text-xs font-mono text-indigo-300"
+                    />
+                    <span>秒</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCustomAnalyzeCurrentTime}
+                  disabled={isScanning}
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-indigo-900/30 disabled:opacity-50"
+                  title="動画の現在の再生画面（または指定秒数）からサムネイルを変更し、マルチフレーム高精度AI解析を実行します"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+                  {t('media_modal.video_time_btn', '📍 この場面でサムネイル変更 ＆ 解析')}
+                </button>
+                {isScanning && onCancelScan && (
+                  <button
+                    onClick={onCancelScan}
+                    className="px-3 py-2 bg-red-600/80 hover:bg-red-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
+                  >
+                    {t('media_modal.cancel', 'キャンセル')}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Single Image/Media Re-analyze Button */}
+          {!isVideo && onReanalyzeSingleMedia && (
+            <div className="p-3 bg-violet-950/40 border border-violet-500/30 rounded-xl flex items-center justify-between gap-2">
+              <div className="text-xs text-violet-300 font-semibold flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+                {t('media_modal.reanalyze_image', '画像AI単体再解析')}
+              </div>
+              <button
+                onClick={() => onReanalyzeSingleMedia(item.id)}
+                disabled={isScanning}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-violet-900/30 disabled:opacity-50"
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+                {t('media_modal.reanalyze_image_btn', 'この画像を再解析')}
+              </button>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-white/10">
+            {item.analysis_status === 'failed' && (
+              <button
+                onClick={() => onRetry(item.id)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-amber-900/20"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                {t('media_modal.retry_analysis', '解析を再試行')}
+              </button>
+            )}
+            <div className="flex items-center gap-2 ml-auto">
+              <button
+                onClick={() => onOpenFolder(item.file_path)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
+                {t('media_modal.open_folder', 'フォルダを開く')}
+              </button>
+              <button
+                onClick={() => onOpenFile(item.file_path)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-indigo-900/30"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                {t('media_modal.open_file', 'ファイルを開く')}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};

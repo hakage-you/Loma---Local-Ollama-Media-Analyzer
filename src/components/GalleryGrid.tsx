@@ -1,0 +1,183 @@
+import React from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { MediaItem } from '../types';
+import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag } from 'lucide-react';
+import { useTranslation } from '../contexts/I18nContext';
+
+interface GalleryGridProps {
+  items: MediaItem[];
+  loading: boolean;
+  gridColumns: number; // 2 ~ 8
+  onSelectItem: (item: MediaItem) => void;
+  onSelectTagFilter?: (tagName: string) => void;
+}
+
+const CATEGORY_NAME_JA: Record<string, string> = {
+  screenshot: 'スクリーンショット',
+  document: '書類・文書',
+  landscape: '風景・自然',
+  food: '料理・食べ物',
+  character: 'キャラクター',
+  animal: '動物・ペット',
+  person: '人物・顔写真',
+  item_product: '商品・雑貨',
+  art_illustration: 'イラスト・アート',
+  text_heavy: '文字主体',
+  tech: 'IT・技術',
+  other: 'その他',
+};
+
+export const GalleryGrid: React.FC<GalleryGridProps> = ({
+  items,
+  loading,
+  gridColumns,
+  onSelectItem,
+  onSelectTagFilter,
+}) => {
+  const { t } = useTranslation();
+  if (loading && items.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-3 text-slate-400">
+          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm">Loading media items...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <div className="flex-1 glass-panel flex flex-col items-center justify-center min-h-[400px] p-8 text-center border-dashed border-white/10">
+        <div className="p-4 bg-slate-800/50 rounded-2xl text-slate-500 mb-3 border border-white/5">
+          <ImageIcon className="w-8 h-8" />
+        </div>
+        <h3 className="text-base font-semibold text-slate-200">No media found</h3>
+        <p className="text-xs text-slate-400 max-w-sm mt-1">
+          Scan a folder using the "Scan Folder" button or adjust your filter settings.
+        </p>
+      </div>
+    );
+  }
+
+  // 列数に応じた Tailwind grid クラスマップ (画面幅に応じて安全にレスポンシブ変化)
+  const gridClassMap: Record<number, string> = {
+    2: 'grid-cols-1 sm:grid-cols-2',
+    3: 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3',
+    4: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4',
+    5: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5',
+    6: 'grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6',
+    7: 'grid-cols-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-7',
+    8: 'grid-cols-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8',
+  };
+
+  const currentGridClass = gridClassMap[gridColumns] || 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5';
+
+  return (
+    <div className="flex-1 overflow-y-auto pr-2 pb-4 min-h-0">
+      <div className={`grid ${currentGridClass} gap-4 auto-rows-max`}>
+        {items.map((item) => {
+          const imageSrc = item.thumbnail_path
+            ? convertFileSrc(item.thumbnail_path)
+            : convertFileSrc(item.file_path);
+
+          const fileName = item.file_path.split(/[/\\]/).pop() || '';
+
+          return (
+            <div
+              key={item.id}
+              onClick={() => onSelectItem(item)}
+              className="group glass-panel glass-panel-hover overflow-hidden flex flex-col cursor-pointer transition-all duration-200 rounded-xl border border-white/10"
+            >
+              {/* Thumbnail Container (固定アスペクト比) */}
+              <div className="relative aspect-square bg-slate-950/80 overflow-hidden flex items-center justify-center">
+                <img
+                  src={imageSrc}
+                  alt={fileName}
+                  loading="lazy"
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  onError={(e) => {
+                    (e.target as HTMLElement).style.display = 'none';
+                  }}
+                />
+
+                {/* Status Badges */}
+                <div className="absolute top-2 left-2 right-2 flex items-center justify-between pointer-events-none z-10">
+                  {item.analysis_status === 'pending' && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/90 backdrop-blur-md text-slate-950 rounded-full text-[10px] font-bold shadow-lg animate-pulse-subtle">
+                      <Clock className="w-3 h-3" />
+                      {t('sidebar.status_pending', '未解析')}
+                    </span>
+                  )}
+                  {item.analysis_status === 'failed' && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 bg-red-500/90 backdrop-blur-md text-white rounded-full text-[10px] font-bold shadow-lg">
+                      <AlertCircle className="w-3 h-3" />
+                      {t('sidebar.status_failed', '解析失敗')}
+                    </span>
+                  )}
+                  {item.categories && item.categories.length > 0 && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-600/90 backdrop-blur-md text-white rounded-full text-[10px] font-medium shadow-lg ml-auto">
+                      {CATEGORY_NAME_JA[item.categories[0]] || item.categories[0]}
+                    </span>
+                  )}
+                </div>
+
+                {/* Hover Overlay */}
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
+                  <div className="p-2 bg-white/20 backdrop-blur-md rounded-full text-white">
+                    <ExternalLink className="w-5 h-5" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Info Area */}
+              <div className="p-2.5 flex flex-col gap-1 flex-1 justify-between bg-slate-900/60 min-w-0">
+                <div className="text-xs font-medium text-slate-200 truncate" title={fileName}>
+                  {fileName}
+                </div>
+
+                {/* Parent Folder */}
+                {item.parent_folder && (
+                  <div className="flex items-center gap-1 text-[11px] text-slate-400 truncate">
+                    <Folder className="w-3 h-3 text-indigo-400 shrink-0" />
+                    <span className="truncate">{item.parent_folder}</span>
+                  </div>
+                )}
+
+                {/* Tags list */}
+                {item.tags && item.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {item.tags.slice(0, 3).map((tagObj) => {
+                      const displayTag = tagObj.name_ja || tagObj.name;
+                      return (
+                        <span
+                          key={tagObj.name}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onSelectTagFilter) {
+                              onSelectTagFilter(tagObj.name);
+                            }
+                          }}
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-slate-800 text-slate-300 hover:text-indigo-200 hover:bg-indigo-900/50 rounded text-[10px] truncate max-w-[120px] cursor-pointer transition"
+                          title="Click to search this tag"
+                        >
+                          <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+                          <span className="truncate">{displayTag}</span>
+                        </span>
+                      );
+                    })}
+                    {item.tags.length > 3 && (
+                      <span className="text-[10px] text-slate-500 self-center">
+                        +{item.tags.length - 3}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
