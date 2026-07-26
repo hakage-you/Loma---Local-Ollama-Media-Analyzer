@@ -18,6 +18,10 @@ pub struct TagPair {
 pub struct AnalysisResult {
     pub categories: Vec<String>,
     pub tags: Vec<TagPair>,
+    /// 修飾語付きの記述的タグ（tag_granularity が atomic の場合や、
+    /// LLMがセクション自体を出さなかった場合は空になる）
+    #[serde(default)]
+    pub descriptive_tags: Vec<TagPair>,
 }
 
 /// LLMからの生のテキストレスポンスから JSON 部分を抽出して AnalysisResult にパースする堅牢なヘルパー関数
@@ -103,6 +107,107 @@ Categories options: ["screenshot", "document", "landscape", "food", "character",
 #[allow(dead_code)]
 pub const VLM_ANALYSIS_PROMPT: &str = VLM_ANALYSIS_PROMPT_LIGHT;
 
+/// タグ付与の粒度レベル（DETAILEDプロンプトにのみ適用される）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagGranularity {
+    /// 現行仕様: 分解重視。descriptive_tags セクション自体を出さない
+    #[default]
+    Atomic,
+    /// 基本語5-10個 + 記述的タグ1-3個
+    Balanced,
+    /// 基本語5-10個 + 記述的タグ3-6個
+    Descriptive,
+}
+
+impl TagGranularity {
+    pub fn from_setting(value: &str) -> Self {
+        match value {
+            "balanced" => TagGranularity::Balanced,
+            "descriptive" => TagGranularity::Descriptive,
+            _ => TagGranularity::Atomic,
+        }
+    }
+
+    pub fn as_setting_str(&self) -> &'static str {
+        match self {
+            TagGranularity::Atomic => "atomic",
+            TagGranularity::Balanced => "balanced",
+            TagGranularity::Descriptive => "descriptive",
+        }
+    }
+}
+
+/// 解析プロンプトの構築に必要な設定値
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PromptConfig {
+    pub granularity: TagGranularity,
+    /// ONの場合、モデル規模判定を無視して常にDETAILEDプロンプトを使用する
+    pub force_detailed: bool,
+}
+
+// DETAILEDプロンプトの本文セクションと出力形式セクションの境界マーカー。
+// build_detailed_with_descriptive はこのマーカーで分割し、
+// 中間に "# Rules for descriptive_tags" セクションを挿入する。
+const DETAILED_OUTPUT_FORMAT_MARKER: &str = "\n\n# Output Format\n";
+
+fn descriptive_rules_section(min: u32, max: u32) -> String {
+    format!(
+        "# Rules for \"descriptive_tags\"\n\
+- Output {min} to {max} descriptive compound tags. Do NOT stop at the minimum: use as many as the scene genuinely supports, up to the maximum, by covering DIFFERENT aspects of the image (e.g. one for the main subject's state/action, one for a background/environmental element, one for lighting/weather/time of day, one for a secondary object's material/condition). Only fall short of the maximum if the image truly lacks that many distinct describable aspects.\n\
+- Each descriptive tag MUST combine a modifier (state, condition, material, weather, time of day, or color) with a subject noun visible in the scene. Examples: \"rain_soaked_tree\", \"sunset_beach\", \"snow_covered_road\".\n\
+- These are IN ADDITION to \"tags\". NEVER omit an atomic tag from \"tags\" just because it also appears inside a descriptive tag.\n\
+- Do NOT put bare nouns here. Every entry must contain a modifier.\n\
+- Each tag MUST be an object containing \"en\" (lowercase snake_case English) and \"ja\" (a natural Japanese phrase)."
+    )
+}
+
+const JSON_EXAMPLE_WITH_DESCRIPTIVE: &str = r#"Respond ONLY with a valid JSON object matching this exact structure:
+{
+  "categories": ["animal", "landscape"],
+  "tags": [
+    {
+      "en": "cat",
+      "ja": "猫"
+    },
+    {
+      "en": "cherry_blossom",
+      "ja": "桜"
+    }
+  ],
+  "descriptive_tags": [
+    {
+      "en": "rain_soaked_tree",
+      "ja": "雨に濡れた木"
+    }
+  ]
+}"#;
+
+/// Lv2/Lv3用: DETAILEDプロンプトのルール部分はそのまま維持しつつ、
+/// "# Output Format" の直前に descriptive_tags セクションを挿入し、
+/// JSON出力例も descriptive_tags を含む形に差し替える
+fn build_detailed_with_descriptive(min: u32, max: u32) -> String {
+    let (rules_part, _) = VLM_ANALYSIS_PROMPT_DETAILED
+        .split_once(DETAILED_OUTPUT_FORMAT_MARKER)
+        .expect("VLM_ANALYSIS_PROMPT_DETAILED must contain the Output Format marker");
+
+    format!(
+        "{rules}\n\n{descriptive}\n\n# Output Format\n{json}",
+        rules = rules_part,
+        descriptive = descriptive_rules_section(min, max),
+        json = JSON_EXAMPLE_WITH_DESCRIPTIVE
+    )
+}
+
+/// 粒度レベルに応じたDETAILEDプロンプト本文を構築する。
+/// Atomic の場合は現行の VLM_ANALYSIS_PROMPT_DETAILED と完全一致する。
+pub fn build_detailed_prompt(granularity: TagGranularity) -> String {
+    match granularity {
+        TagGranularity::Atomic => VLM_ANALYSIS_PROMPT_DETAILED.to_string(),
+        TagGranularity::Balanced => build_detailed_with_descriptive(1, 3),
+        TagGranularity::Descriptive => build_detailed_with_descriptive(3, 6),
+    }
+}
+
 /// モデル名からパラメータ数（~B）を数値 (f32) として抽出する堅牢なパース関数
 /// 例: "qwen3-vl:4b" -> Some(4.0)
 /// 例: "llama3.2-vision:11b" -> Some(11.0)
@@ -150,10 +255,16 @@ impl VlmPromptType {
     }
 }
 
-/// プロバイダー名とモデル名に応じたプロンプトタイプとプロンプト本文を返す関数
-pub fn get_vlm_prompt_info(provider_name: &str, model_name: &str) -> (VlmPromptType, &'static str) {
+/// プロバイダー名とモデル名、および解析プロンプト設定に応じた
+/// プロンプトタイプとプロンプト本文を返す関数
+pub fn get_vlm_prompt_info(provider_name: &str, model_name: &str, config: &PromptConfig) -> (VlmPromptType, String) {
     let provider_lower = provider_name.to_lowercase();
     let model_lower = model_name.to_lowercase();
+
+    // 0. 高精度プロンプトの強制適用が有効な場合は、モデル規模判定を無視する
+    if config.force_detailed {
+        return (VlmPromptType::Detailed, build_detailed_prompt(config.granularity));
+    }
 
     // 1. クラウドプロバイダー (Gemini, OpenAI, Claude) は常に高精度詳細プロンプトを使用
     if provider_lower.contains("gemini")
@@ -163,28 +274,133 @@ pub fn get_vlm_prompt_info(provider_name: &str, model_name: &str) -> (VlmPromptT
         || provider_lower.contains("claude")
         || provider_lower.contains("anthropic")
     {
-        return (VlmPromptType::Detailed, VLM_ANALYSIS_PROMPT_DETAILED);
+        return (VlmPromptType::Detailed, build_detailed_prompt(config.granularity));
     }
 
     // 2. Ollamaモデルの数値パラメータ解析: 10B（100億パラメータ）以上は高精度詳細プロンプト
     if let Some(param_size) = parse_model_parameter_size(model_name) {
         if param_size >= 10.0 {
-            return (VlmPromptType::Detailed, VLM_ANALYSIS_PROMPT_DETAILED);
+            return (VlmPromptType::Detailed, build_detailed_prompt(config.granularity));
         } else {
-            return (VlmPromptType::Light, VLM_ANALYSIS_PROMPT_LIGHT);
+            return (VlmPromptType::Light, VLM_ANALYSIS_PROMPT_LIGHT.to_string());
         }
     }
 
     // 3. パース失敗時のキーワードフォールバック（例: 4b/11b などの数字がモデル名に含まれない場合）
     if model_lower.contains("large") || model_lower.contains("giant") || model_lower.contains("pro") {
-        (VlmPromptType::Detailed, VLM_ANALYSIS_PROMPT_DETAILED)
+        (VlmPromptType::Detailed, build_detailed_prompt(config.granularity))
     } else {
         // パラメータ数不明のモデルは、破綻を防ぎ安定動作させるため LIGHT に安全フォールバック
-        (VlmPromptType::Light, VLM_ANALYSIS_PROMPT_LIGHT)
+        (VlmPromptType::Light, VLM_ANALYSIS_PROMPT_LIGHT.to_string())
     }
 }
 
 /// プロンプト本文のみを返す便利関数
-pub fn get_vlm_prompt(provider_name: &str, model_name: &str) -> &'static str {
-    get_vlm_prompt_info(provider_name, model_name).1
+pub fn get_vlm_prompt(provider_name: &str, model_name: &str, config: &PromptConfig) -> String {
+    get_vlm_prompt_info(provider_name, model_name, config).1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(granularity: TagGranularity, force_detailed: bool) -> PromptConfig {
+        PromptConfig { granularity, force_detailed }
+    }
+
+    #[test]
+    fn atomic_prompt_matches_legacy_detailed_prompt_verbatim() {
+        // Lv1(atomic) は既存ユーザーへの後方互換のため、
+        // 従来の VLM_ANALYSIS_PROMPT_DETAILED と一文字違わず一致しなければならない
+        assert_eq!(build_detailed_prompt(TagGranularity::Atomic), VLM_ANALYSIS_PROMPT_DETAILED);
+    }
+
+    #[test]
+    fn atomic_prompt_has_no_descriptive_tags_section() {
+        let prompt = build_detailed_prompt(TagGranularity::Atomic);
+        assert!(!prompt.contains("descriptive_tags"));
+    }
+
+    #[test]
+    fn balanced_prompt_specifies_1_to_3_descriptive_tags() {
+        let prompt = build_detailed_prompt(TagGranularity::Balanced);
+        assert!(prompt.contains("Output 1 to 3 descriptive compound tags"));
+        assert!(prompt.contains("\"descriptive_tags\""));
+        // 基本語タグのルール文言はレベルに関わらず維持される
+        assert!(prompt.contains("Output 5 to 10 accurate, reusable tags"));
+    }
+
+    #[test]
+    fn descriptive_prompt_specifies_3_to_6_descriptive_tags() {
+        let prompt = build_detailed_prompt(TagGranularity::Descriptive);
+        assert!(prompt.contains("Output 3 to 6 descriptive compound tags"));
+        assert!(prompt.contains("Output 5 to 10 accurate, reusable tags"));
+    }
+
+    #[test]
+    fn force_detailed_overrides_small_model_to_detailed() {
+        let cfg = config(TagGranularity::Balanced, true);
+        let (kind, prompt) = get_vlm_prompt_info("Ollama", "qwen3-vl:4b", &cfg);
+        assert_eq!(kind, VlmPromptType::Detailed);
+        assert!(prompt.contains("descriptive_tags"));
+    }
+
+    #[test]
+    fn small_model_without_force_detailed_stays_light_and_ignores_granularity() {
+        let cfg = config(TagGranularity::Descriptive, false);
+        let (kind, prompt) = get_vlm_prompt_info("Ollama", "qwen3-vl:4b", &cfg);
+        assert_eq!(kind, VlmPromptType::Light);
+        assert_eq!(prompt, VLM_ANALYSIS_PROMPT_LIGHT);
+    }
+
+    #[test]
+    fn cloud_provider_always_uses_detailed_prompt() {
+        let cfg = config(TagGranularity::Atomic, false);
+        let (kind, _) = get_vlm_prompt_info("Google Gemini", "gemini-2.0-flash", &cfg);
+        assert_eq!(kind, VlmPromptType::Detailed);
+    }
+
+    #[test]
+    fn analysis_result_parses_without_descriptive_tags_field() {
+        // 旧形式のJSON（LLMがdescriptive_tagsを返さない場合）でもパースでき、空配列になる
+        let json = r#"{"categories":["animal"],"tags":[{"en":"cat","ja":"猫"}]}"#;
+        let result: AnalysisResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.categories, vec!["animal".to_string()]);
+        assert_eq!(result.tags.len(), 1);
+        assert!(result.descriptive_tags.is_empty());
+    }
+
+    #[test]
+    fn analysis_result_parses_with_descriptive_tags_field() {
+        let json = r#"{
+            "categories": ["landscape"],
+            "tags": [{"en":"tree","ja":"木"}],
+            "descriptive_tags": [{"en":"rain_soaked_tree","ja":"雨に濡れた木"}]
+        }"#;
+        let result: AnalysisResult = serde_json::from_str(json).unwrap();
+        assert_eq!(result.descriptive_tags.len(), 1);
+        assert_eq!(result.descriptive_tags[0].en, "rain_soaked_tree");
+    }
+
+    #[test]
+    fn tag_granularity_setting_roundtrip() {
+        assert_eq!(TagGranularity::from_setting("atomic"), TagGranularity::Atomic);
+        assert_eq!(TagGranularity::from_setting("balanced"), TagGranularity::Balanced);
+        assert_eq!(TagGranularity::from_setting("descriptive"), TagGranularity::Descriptive);
+        // 不明な値は安全に atomic へフォールバックする
+        assert_eq!(TagGranularity::from_setting("bogus"), TagGranularity::Atomic);
+
+        for g in [TagGranularity::Atomic, TagGranularity::Balanced, TagGranularity::Descriptive] {
+            assert_eq!(TagGranularity::from_setting(g.as_setting_str()), g);
+        }
+    }
+
+    #[test]
+    fn parse_model_parameter_size_extracts_billions() {
+        assert_eq!(parse_model_parameter_size("qwen3-vl:4b"), Some(4.0));
+        assert_eq!(parse_model_parameter_size("llama3.2-vision:11b"), Some(11.0));
+        assert_eq!(parse_model_parameter_size("llava:34b"), Some(34.0));
+        assert_eq!(parse_model_parameter_size("my-custom-model:12b"), Some(12.0));
+        assert_eq!(parse_model_parameter_size("no-size-here"), None);
+    }
 }

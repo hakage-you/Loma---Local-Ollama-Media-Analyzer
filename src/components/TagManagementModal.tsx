@@ -95,7 +95,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   onSuggestMerges,
   onSelectTagFilter,
 }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const [activeTab, setActiveTab] = useState<'all' | 'suggestions'>('all');
   const [search, setSearch] = useState('');
   const [editingTagId, setEditingTagId] = useState<number | null>(null);
@@ -173,6 +173,9 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   // ソート順（デフォルト: 件数が多い順）
   const [sortBy, setSortBy] = useState<'count_desc' | 'count_asc' | 'alpha_asc' | 'ja_asc'>('count_desc');
 
+  // タグ種別フィルタ（基本語 / 記述的タグ）
+  const [kindFilter, setKindFilter] = useState<'all' | 'basic' | 'descriptive'>('all');
+
   // AI Merge 提案を常に対象タグ件数（グループ内タグ数）が多い順（降順）にソート
   const sortedSuggestions = React.useMemo(() => {
     if (!suggestions || !Array.isArray(suggestions)) return [];
@@ -196,8 +199,9 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   const freeTags = tags.filter((t) => !t.is_category);
   const filteredTags = freeTags.filter(
     (t) =>
-      t.name.toLowerCase().includes(search.toLowerCase()) ||
-      (t.name_ja && t.name_ja.toLowerCase().includes(search.toLowerCase()))
+      (kindFilter === 'all' || t.kind === kindFilter) &&
+      (t.name.toLowerCase().includes(search.toLowerCase()) ||
+        (t.name_ja && t.name_ja.toLowerCase().includes(search.toLowerCase())))
   );
 
   // タグをクリックしてメイン画面で即座に絞り込み検索
@@ -559,6 +563,25 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   <option value="alpha_asc">Sort: Alphabet (A → Z)</option>
                   <option value="ja_asc">Sort: Japanese (50音順)</option>
                 </select>
+
+                {/* タグ種別フィルタ: 基本語 / 記述的タグ */}
+                <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5 shrink-0">
+                  {(['all', 'basic', 'descriptive'] as const).map((k) => (
+                    <button
+                      key={k}
+                      onClick={() => setKindFilter(k)}
+                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition cursor-pointer ${
+                        kindFilter === k ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {k === 'all'
+                        ? t('tag_modal.kind_all', 'すべて')
+                        : k === 'basic'
+                        ? t('tag_modal.kind_basic', '基本語')
+                        : t('tag_modal.kind_descriptive', '修飾語')}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {selectedTagIds.length >= 2 && (
@@ -659,6 +682,11 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                           <span className="text-[11px] font-bold text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded border border-white/5">
                             ({t.count ?? 0})
                           </span>
+                          {t.kind === 'descriptive' && (
+                            <span className="text-[9px] font-bold text-slate-500 bg-slate-900/60 px-1.5 py-0.5 rounded border border-white/5 uppercase tracking-wide">
+                              修飾語
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
@@ -666,7 +694,9 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                     <div className="flex items-center gap-1 shrink-0 ml-2">
                       {onSelectTagFilter && (
                         <button
-                          onClick={() => handleTriggerSearchFilter(t.name)}
+                          onClick={() =>
+                            handleTriggerSearchFilter(language === 'ja' && t.name_ja ? t.name_ja : t.name)
+                          }
                           className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-lg transition cursor-pointer"
                           title="Filter Gallery by this Tag"
                         >

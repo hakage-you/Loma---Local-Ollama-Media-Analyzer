@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HelpCircle, HardDrive } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HelpCircle, HardDrive, Layers, FlaskConical, Info } from 'lucide-react';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { RECOMMENDED_VLM_MODELS, RECOMMENDED_TEXT_MODELS, RecommendedModel } from '../constants/recommendedModels';
-import { OllamaPullProgressPayload } from '../types';
+import { OllamaPullProgressPayload, TagGranularity, GranularityComparisonItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 
 interface SettingsModalProps {
@@ -84,6 +85,13 @@ const isModelSelected = (recommendedName: string, selectedModel: string): boolea
   return false;
 };
 
+// タグ付与粒度レベルの定義（基本語タグは常に5〜10個で固定、記述的タグのみレベルで変動する）
+const GRANULARITY_LEVELS: { value: TagGranularity; labelKey: string; labelDefault: string; descriptiveRange: string }[] = [
+  { value: 'atomic', labelKey: 'settings.granularity_atomic', labelDefault: 'Lv1: 分解重視（現行）', descriptiveRange: '基本語タグ 5〜10個 / 記述的タグなし' },
+  { value: 'balanced', labelKey: 'settings.granularity_balanced', labelDefault: 'Lv2: バランス', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 1〜3個' },
+  { value: 'descriptive', labelKey: 'settings.granularity_descriptive', labelDefault: 'Lv3: 記述重視', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 3〜6個' },
+];
+
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
   settings,
@@ -100,7 +108,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollama_url || 'http://localhost:11434');
   const [selectedVlmModel, setSelectedVlmModel] = useState(settings.ollama_model || 'qwen3-vl:30b');
   const [selectedTextModel, setSelectedTextModel] = useState(settings.ollama_text_model || 'qwen3:14b');
+
+  // 解析プロンプト設定（プロバイダ非依存の共通設定）
   const [forceDetailedPrompt, setForceDetailedPrompt] = useState<boolean>(settings.force_detailed_prompt === 'true');
+  const [tagGranularity, setTagGranularity] = useState<TagGranularity>((settings.tag_granularity as TagGranularity) || 'atomic');
+  const [effectivePromptType, setEffectivePromptType] = useState<'DETAILED' | 'LIGHT' | null>(null);
+
+  // 粒度比較（検証用）
+  const [compareModalOpen, setCompareModalOpen] = useState(false);
+  const [compareResults, setCompareResults] = useState<GranularityComparisonItem[]>([]);
+  const [compareProgress, setCompareProgress] = useState<Record<TagGranularity, 'pending' | 'running' | 'done'>>({
+    atomic: 'pending',
+    balanced: 'pending',
+    descriptive: 'pending',
+  });
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [compareImagePath, setCompareImagePath] = useState<string | null>(null);
+  const [compareImageEnlarged, setCompareImageEnlarged] = useState(false);
 
   // System VRAM
   const [vramGb, setVramGb] = useState<number | null>(null);
@@ -157,6 +181,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (settings.ollama_model) setSelectedVlmModel(settings.ollama_model);
     if (settings.ollama_text_model) setSelectedTextModel(settings.ollama_text_model);
     if (settings.force_detailed_prompt !== undefined) setForceDetailedPrompt(settings.force_detailed_prompt === 'true');
+    if (settings.tag_granularity) setTagGranularity(settings.tag_granularity as TagGranularity);
 
     if (settings.gemini_model) setGeminiModel(settings.gemini_model);
     if (settings.gemini_text_model) setGeminiTextModel(settings.gemini_text_model);
@@ -185,7 +210,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .catch(() => { });
   }, [settings, open]);
 
+  // 現在選択中のプロバイダー・モデル・強制フラグから、実際に使用されるプロンプト種別を都度問い合わせる。
+  // 未保存の選択状態（モデルのドロップダウンを変えた直後など）も正しく反映するため、
+  // 保存済み設定ではなくローカルstateを渡す。
+  useEffect(() => {
+    if (!open) return;
+    const modelForProvider =
+      provider === 'gemini' ? geminiModel :
+      provider === 'openai' ? openaiModel :
+      provider === 'claude' ? claudeModel :
+      selectedVlmModel;
+
+    invoke<string>('get_effective_prompt_type', {
+      provider,
+      model: modelForProvider,
+      forceDetailed: forceDetailedPrompt,
+    })
+      .then((result) => setEffectivePromptType(result as 'DETAILED' | 'LIGHT'))
+      .catch(() => setEffectivePromptType(null));
+  }, [open, provider, selectedVlmModel, geminiModel, openaiModel, claudeModel, forceDetailedPrompt]);
+
   if (!open) return null;
+
+  const isGranularityDisabled = effectivePromptType === 'LIGHT';
+  const hasGranularityChanged = tagGranularity !== ((settings.tag_granularity as TagGranularity) || 'atomic');
+
+  const handleTryGranularity = async () => {
+    let unlisten: (() => void) | null = null;
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        filters: [{ name: 'Image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+      });
+      if (!selected || typeof selected !== 'string') return;
+
+      setCompareModalOpen(true);
+      setCompareError(null);
+      setCompareResults([]);
+      setCompareImagePath(selected);
+      setCompareProgress({ atomic: 'pending', balanced: 'pending', descriptive: 'pending' });
+
+      // レベルごとの完了をモーダル内に逐次反映するため、全件完了を待たずイベントを購読する
+      unlisten = await listen<{ status: 'running' | 'done'; item: GranularityComparisonItem | null; granularity: TagGranularity }>(
+        'granularity_comparison_progress',
+        (event) => {
+          const { status, item, granularity } = event.payload;
+          setCompareProgress((prev) => ({ ...prev, [granularity]: status }));
+          if (status === 'done' && item) {
+            setCompareResults((prev) => [...prev.filter((r) => r.granularity !== granularity), item]);
+          }
+        }
+      );
+
+      // イベントは逐次表示用の補助。最終的な整合性は戻り値で確定させる
+      // (モック環境などイベントが発火しない場合でも結果が表示されるようにするため)
+      const results = await invoke<GranularityComparisonItem[]>('compare_granularity_levels', { imagePath: selected });
+      setCompareResults(results);
+      setCompareProgress({ atomic: 'done', balanced: 'done', descriptive: 'done' });
+    } catch (e: any) {
+      setCompareError(String(e?.message || e));
+    } finally {
+      if (unlisten) unlisten();
+    }
+  };
 
   const handleRefreshModels = async () => {
     setLoadingModels(true);
@@ -201,6 +288,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       await onUpdateSetting('ollama_model', selectedVlmModel);
       await onUpdateSetting('ollama_text_model', selectedTextModel);
       await onUpdateSetting('force_detailed_prompt', forceDetailedPrompt ? 'true' : 'false');
+      await onUpdateSetting('tag_granularity', tagGranularity);
 
       await onUpdateSetting('gemini_model', geminiModel);
       await onUpdateSetting('gemini_text_model', geminiTextModel);
@@ -408,6 +496,73 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
+          {/* Analysis Prompt Settings (provider-independent common section) */}
+          <div className="p-4 bg-slate-900/50 rounded-xl border border-white/5 space-y-3.5">
+            <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5" />
+              {t('settings.prompt_section', '解析プロンプト設定')}
+            </h4>
+
+            {/* Force Detailed Prompt Mode Checkbox (moved from Ollama-only section: also applies to cloud providers) */}
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={forceDetailedPrompt}
+                  onChange={(e) => setForceDetailedPrompt(e.target.checked)}
+                  className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
+                />
+                <span>{t('settings.force_detailed_mode', '高精度プロンプトモード (DETAILED) を強制適用する')}</span>
+              </label>
+              <TooltipHelp align="right" text={t('settings.force_detailed_help', '軽量モデル（8B未満など）で高精度モードを強制すると、モデルが高度な文脈指示や構造化JSONを解釈できず解析エラーの原因となる場合があります。OFF推奨（判定失敗時に自動で軽量モードへフォールバックします）。')} />
+            </div>
+
+            {/* Tag Granularity Selection */}
+            <div className="pt-1 border-t border-white/5">
+              <div className="flex items-center gap-1.5 mb-1.5 mt-3">
+                <label className="text-xs font-semibold text-slate-300">
+                  {t('settings.tag_granularity', 'タグ粒度')}
+                </label>
+                <TooltipHelp text={t('settings.tag_granularity_help', 'DETAILEDプロンプト使用時の、タグの分解度合いを設定します。基本語タグは常に5〜10個で維持され、記述的タグ（例:「雨に濡れた木」）が粒度に応じて追加されます。')} />
+              </div>
+
+              <select
+                value={tagGranularity}
+                onChange={(e) => setTagGranularity(e.target.value as TagGranularity)}
+                disabled={isGranularityDisabled}
+                className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {GRANULARITY_LEVELS.map((level) => (
+                  <option key={level.value} value={level.value}>
+                    {t(level.labelKey, level.labelDefault)}
+                  </option>
+                ))}
+              </select>
+
+              <p className="mt-1.5 text-[10px] text-slate-400">
+                {GRANULARITY_LEVELS.find((l) => l.value === tagGranularity)?.descriptiveRange}
+              </p>
+
+              {isGranularityDisabled && (
+                <div className="mt-2.5 p-2.5 bg-slate-950/60 border border-white/10 rounded-lg text-[11px] text-slate-400 flex items-start gap-1.5">
+                  <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                  <span>{t('settings.granularity_disabled_light', '現在のモデルは軽量プロンプト(LIGHT)で動作するため、タグ粒度設定は適用されません。「高精度プロンプトを強制適用」を有効にすると使用できます。')}</span>
+                </div>
+              )}
+
+              <div className="mt-3">
+                <button
+                  onClick={handleTryGranularity}
+                  disabled={isGranularityDisabled}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-white/10 rounded-lg text-[11px] font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <FlaskConical className="w-3.5 h-3.5" />
+                  {t('settings.granularity_try', '粒度を試す（画像を選択）')}
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* Privacy Disclaimer Banner for External LLMs */}
           {provider !== 'ollama' && (
             <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2 text-amber-300 text-[11px] leading-relaxed">
@@ -541,20 +696,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     ))
                   )}
                 </select>
-
-                {/* Force Detailed Prompt Mode Checkbox */}
-                <div className="mt-3 p-3 bg-slate-950/60 rounded-xl border border-white/5 flex items-center justify-between">
-                  <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={forceDetailedPrompt}
-                      onChange={(e) => setForceDetailedPrompt(e.target.checked)}
-                      className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                    />
-                    <span>{t('settings.force_detailed_mode', '高精度プロンプトモード (DETAILED) を強制適用する')}</span>
-                  </label>
-                  <TooltipHelp align="right" text={t('settings.force_detailed_help', '軽量モデル（8B未満など）で高精度モードを強制すると、モデルが高度な文脈指示や構造化JSONを解釈できず解析エラーの原因となる場合があります。OFF推奨（判定失敗時に自動で軽量モードへフォールバックします）。')} />
-                </div>
 
                 {/* VLM Recommended Preset Cards */}
                 <div className="mt-3 space-y-1.5">
@@ -774,6 +915,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           )}
         </div>
 
+        {/* Tag Granularity Change Notice */}
+        {hasGranularityChanged && (
+          <div className="mt-4 p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl flex items-start gap-2 text-indigo-200 text-[11px] leading-relaxed">
+            <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+            <span>{t('settings.granularity_changed_notice', 'タグ粒度を変更しました。新しい粒度はこれから解析するメディアにのみ適用されます。既存メディアのタグを揃えるには、フォルダ管理から再解析してください。')}</span>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="mt-6 border-t border-white/10 pt-4 flex items-center justify-end gap-3">
           <button
@@ -844,6 +993,148 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <Download className="w-3.5 h-3.5" />
                 ダウンロード開始
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Granularity Comparison Modal (verification tool) */}
+      {compareModalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-3xl w-full p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0">
+                {compareImagePath ? (
+                  <button
+                    onClick={() => setCompareImageEnlarged(true)}
+                    className="shrink-0 w-14 h-14 rounded-xl overflow-hidden border border-indigo-500/30 hover:border-indigo-400 transition cursor-pointer group relative"
+                    title="クリックで拡大表示"
+                  >
+                    <img
+                      src={convertFileSrc(compareImagePath)}
+                      alt="解析対象プレビュー"
+                      className="w-full h-full object-cover group-hover:scale-105 transition"
+                    />
+                  </button>
+                ) : (
+                  <div className="p-2.5 bg-indigo-500/20 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
+                    <FlaskConical className="w-5 h-5" />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <h4 className="text-base font-bold text-white">{t('settings.granularity_try', '粒度を試す（画像を選択）')}</h4>
+                  <p className="text-xs text-slate-400 truncate" title={compareImagePath || undefined}>
+                    {compareImagePath ? compareImagePath.split(/[/\\]/).pop() : 'Lv1 / Lv2 / Lv3 の解析結果を比較します'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setCompareModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer shrink-0"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {compareError && (
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">
+                ⚠️ {compareError}
+              </div>
+            )}
+
+            {!compareError && (
+              <>
+                <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                  <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${Object.values(compareProgress).some((s) => s === 'running') ? 'animate-spin' : ''}`} />
+                  <span>
+                    {Object.values(compareProgress).filter((s) => s === 'done').length} / {GRANULARITY_LEVELS.length} 完了
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {GRANULARITY_LEVELS.map((level) => {
+                    const status = compareProgress[level.value];
+                    const item = compareResults.find((r) => r.granularity === level.value);
+                    return (
+                      <div key={level.value} className="p-3 bg-slate-950/60 rounded-xl border border-white/5 space-y-2 min-h-[110px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-indigo-300">
+                            {t(level.labelKey, level.labelDefault)}
+                          </span>
+                          {status === 'running' && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
+                          {status === 'done' && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+                          {status === 'pending' && <span className="text-[10px] text-slate-500">待機中</span>}
+                        </div>
+
+                        {status !== 'done' && (
+                          <div className="flex items-center justify-center py-6 text-[11px] text-slate-500">
+                            {status === 'running' ? '解析中...' : '待機中...'}
+                          </div>
+                        )}
+
+                        {status === 'done' && item?.error && (
+                          <p className="text-[11px] text-rose-300">⚠️ {item.error}</p>
+                        )}
+
+                        {status === 'done' && item && !item.error && (
+                          <>
+                            <div className="flex flex-wrap gap-1">
+                              {item.categories.map((c) => (
+                                <span key={c} className="text-[10px] px-1.5 py-0.5 bg-slate-800 text-slate-300 rounded">
+                                  {c}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {item.tags.map((tag) => (
+                                <span key={tag.en} className="text-[10px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-300 rounded-full">
+                                  #{tag.ja || tag.en}
+                                </span>
+                              ))}
+                            </div>
+                            {item.descriptive_tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 pt-1 border-t border-white/5">
+                                {item.descriptive_tags.map((tag) => (
+                                  <span key={tag.en} className="text-[10px] px-1.5 py-0.5 bg-slate-800/80 text-slate-400 rounded-full border border-white/5">
+                                    {tag.ja || tag.en}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Enlarged preview of the image being compared */}
+      {compareImageEnlarged && compareImagePath && (
+        <div
+          onClick={() => setCompareImageEnlarged(false)}
+          className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer animate-in fade-in duration-150 select-none"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center">
+            <img
+              src={convertFileSrc(compareImagePath)}
+              alt="解析対象プレビュー拡大"
+              className="max-w-full max-h-[80vh] object-contain rounded-2xl shadow-2xl border border-white/10"
+            />
+            <div className="mt-3 flex items-center gap-3">
+              <span className="text-xs text-slate-300 font-mono bg-slate-900/80 px-3 py-1 rounded-lg border border-white/10 truncate max-w-md">
+                {compareImagePath.split(/[/\\]/).pop()}
+              </span>
+              <button
+                onClick={() => setCompareImageEnlarged(false)}
+                className="text-xs text-slate-300 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-white/10 transition cursor-pointer"
+              >
+                閉じる
               </button>
             </div>
           </div>

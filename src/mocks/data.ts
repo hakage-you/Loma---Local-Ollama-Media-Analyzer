@@ -1,4 +1,4 @@
-import { MediaItem, TagItem, ScanFolderItem } from '../types';
+import { MediaItem, TagItem, TagPairItem, ScanFolderItem } from '../types';
 
 interface CategoryDef {
   category: string;
@@ -6,6 +6,13 @@ interface CategoryDef {
   tags: { name: string; name_ja: string }[];
   count: number;
 }
+
+// 記述的タグ(descriptive)のUI確認用サンプル。tag_granularity が atomic 以外の設定で
+// 解析された想定のメディアに付与する（先頭の landscape メディア1件のみ）
+const SAMPLE_DESCRIPTIVE_TAGS: TagPairItem[] = [
+  { name: 'rain_soaked_tree', name_ja: '雨に濡れた木', kind: 'descriptive' },
+  { name: 'sunset_beach', name_ja: '夕日の海岸', kind: 'descriptive' },
+];
 
 const CATEGORY_DEFS: CategoryDef[] = [
   { category: 'screenshot', parentFolder: 'Screenshots', tags: [{ name: 'ui', name_ja: 'UI' }, { name: 'app', name_ja: 'アプリ' }], count: 3 },
@@ -26,6 +33,9 @@ function buildMedia(): MediaItem[] {
   for (const def of CATEGORY_DEFS) {
     for (let i = 0; i < def.count; i++) {
       const fileName = `mock_media_${fileIndex}.jpg`;
+      const basicTags: TagPairItem[] = def.tags.map((t) => ({ ...t, kind: 'basic' }));
+      // landscape カテゴリの先頭1件だけ記述的タグ(descriptive)を併記して見た目を確認できるようにする
+      const isDescriptiveSample = def.category === 'landscape' && i === 0;
       items.push({
         id: id++,
         file_path: `mock-asset://${fileName}`,
@@ -34,7 +44,7 @@ function buildMedia(): MediaItem[] {
         file_size: 200_000 + fileIndex * 1234,
         analysis_status: 'completed',
         categories: [def.category],
-        tags: def.tags,
+        tags: isDescriptiveSample ? [...basicTags, ...SAMPLE_DESCRIPTIVE_TAGS] : basicTags,
       });
       fileIndex++;
     }
@@ -81,16 +91,16 @@ export const MOCK_MEDIA: MediaItem[] = buildMedia();
 export const MOCK_MEDIA_FILE_COUNT = MOCK_MEDIA.length;
 
 function buildTags(): TagItem[] {
-  const counts = new Map<string, { name_ja?: string; is_category: boolean; count: number }>();
+  const counts = new Map<string, { name_ja?: string; is_category: boolean; kind: 'basic' | 'descriptive'; count: number }>();
 
   for (const item of MOCK_MEDIA) {
     for (const cat of item.categories) {
-      const entry = counts.get(cat) || { is_category: true, count: 0 };
+      const entry = counts.get(cat) || { is_category: true, kind: 'basic' as const, count: 0 };
       entry.count++;
       counts.set(cat, entry);
     }
     for (const tag of item.tags) {
-      const entry = counts.get(tag.name) || { name_ja: tag.name_ja, is_category: false, count: 0 };
+      const entry = counts.get(tag.name) || { name_ja: tag.name_ja, is_category: false, kind: tag.kind, count: 0 };
       entry.count++;
       counts.set(tag.name, entry);
     }
@@ -103,6 +113,7 @@ function buildTags(): TagItem[] {
     name_ja: v.name_ja,
     is_category: v.is_category,
     count: v.count,
+    kind: v.kind,
   }));
 }
 
@@ -121,6 +132,7 @@ export const MOCK_SETTINGS: Record<string, string> = {
   ollama_model: 'qwen3-vl:8b',
   ollama_text_model: 'qwen2.5:7b',
   force_detailed_prompt: 'false',
+  tag_granularity: 'balanced',
   ui_language: 'ja',
   ffmpeg_notice_enabled: 'true',
 };

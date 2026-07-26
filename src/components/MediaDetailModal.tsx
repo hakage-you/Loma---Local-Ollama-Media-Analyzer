@@ -35,7 +35,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onAddTagToMedia,
   onRemoveTagFromMedia,
 }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const [videoError, setVideoError] = React.useState(false);
   const [manualTime, setManualTime] = React.useState('5.0');
   const videoRef = React.useRef<HTMLVideoElement>(null);
@@ -216,14 +216,23 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       📁 {cat}
                     </button>
                   ))}
-                  {/* Tags */}
-                  {item.tags && item.tags.map((tItem, idx) => (
+                  {/* Tags (basic tags first, descriptive tags rendered with muted styling) */}
+                  {item.tags && [...item.tags]
+                    .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'descriptive' ? 1 : -1))
+                    .map((tItem, idx) => (
                     <div
                       key={`tag-${idx}-${tItem.name}`}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-800 text-slate-300 border border-white/10 rounded-lg text-xs font-medium hover:bg-slate-700 hover:text-white transition group"
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 border rounded-lg text-xs font-medium transition group ${
+                        tItem.kind === 'descriptive'
+                          ? 'bg-slate-900/60 text-slate-500 border-white/5 hover:bg-slate-800/60 hover:text-slate-300'
+                          : 'bg-slate-800 text-slate-300 border-white/10 hover:bg-slate-700 hover:text-white'
+                      }`}
                     >
                       <span
-                        onClick={() => onSelectTagFilter && onSelectTagFilter(tItem.name)}
+                        onClick={() =>
+                          onSelectTagFilter &&
+                          onSelectTagFilter(language === 'ja' && tItem.name_ja ? tItem.name_ja : tItem.name)
+                        }
                         className="cursor-pointer hover:underline"
                         title="Click to search tag in gallery"
                       >

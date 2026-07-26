@@ -569,7 +569,6 @@ function AppContent() {
       <AboutModal
         open={isAboutOpen}
         onClose={() => setIsAboutOpen(false)}
-        ffmpegInstalled={ffmpegInstalled}
       />
 
       {/* Advanced Search Modal */}

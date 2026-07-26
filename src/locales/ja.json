@@ -87,7 +87,10 @@
     "sort_count_asc": "件数 (少ない順)",
     "sort_name_asc": "名前 (昇順)",
     "filter_placeholder": "タグ名で検索...",
-    "scan_warning": "現在、画像・メディアの解析処理がバックエンドで進行中のため、タグの編集・マージ操作は一時的にロックされています。"
+    "scan_warning": "現在、画像・メディアの解析処理がバックエンドで進行中のため、タグの編集・マージ操作は一時的にロックされています。",
+    "kind_all": "すべて",
+    "kind_basic": "基本語",
+    "kind_descriptive": "修飾語"
   },
   "folder_modal": {
     "title": "登録フォルダ管理",
@@ -121,7 +124,16 @@
     "pull_button": "ダウンロード",
     "pulling": "取得中...",
     "downloaded": "インストール済み",
-    "ollama_not_installed": "Ollamaがインストールされていないか、サービスが起動していません。ローカルVLM機能を使用するにはOllamaを起動またはインストールしてください。"
+    "ollama_not_installed": "Ollamaがインストールされていないか、サービスが起動していません。ローカルVLM機能を使用するにはOllamaを起動またはインストールしてください。",
+    "prompt_section": "解析プロンプト設定",
+    "tag_granularity": "タグ粒度",
+    "tag_granularity_help": "DETAILEDプロンプト使用時の、タグの分解度合いを設定します。基本語タグは常に5〜10個で維持され、記述的タグ（例:「雨に濡れた木」）が粒度に応じて追加されます。",
+    "granularity_atomic": "Lv1: 分解重視（現行）",
+    "granularity_balanced": "Lv2: バランス",
+    "granularity_descriptive": "Lv3: 記述重視",
+    "granularity_disabled_light": "現在のモデルは軽量プロンプト(LIGHT)で動作するため、タグ粒度設定は適用されません。「高精度プロンプトを強制適用」を有効にすると使用できます。",
+    "granularity_changed_notice": "タグ粒度を変更しました。新しい粒度はこれから解析するメディアにのみ適用されます。既存メディアのタグを揃えるには、フォルダ管理から再解析してください。",
+    "granularity_try": "粒度を試す（画像を選択）"
   },
   "logs": {
     "title": "処理ログ",

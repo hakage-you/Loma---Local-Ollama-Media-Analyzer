@@ -65,18 +65,6 @@ struct OllamaGenerateResponse {
     thinking: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct TagPair {
-    pub en: String,
-    pub ja: String,
-}
-
-#[derive(Deserialize)]
-struct AnalysisResult {
-    categories: Vec<String>,
-    tags: Vec<TagPair>,
-}
-
 // 英語タグの表記揺れ防止（単数形化＆正規化）
 pub fn normalize_tag_en(raw_tag: &str) -> String {
     let mut tag = raw_tag.trim().to_lowercase().replace([' ', '-'], "_");
@@ -242,6 +230,25 @@ pub async fn fetch_ollama_models(base_url: &str) -> Result<Vec<String>> {
 }
 
 // Ollamaモデルの明示的アンロード（VRAM即時解放）
+/// settings テーブルから解析プロンプト設定（粒度・高精度強制）を読み込む
+pub async fn load_prompt_config(pool: &Pool<Sqlite>) -> crate::llm::PromptConfig {
+    let granularity_str: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'tag_granularity'")
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| "atomic".to_string());
+    let force_detailed_str: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'force_detailed_prompt'")
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| "false".to_string());
+
+    crate::llm::PromptConfig {
+        granularity: crate::llm::TagGranularity::from_setting(&granularity_str),
+        force_detailed: force_detailed_str == "true",
+    }
+}
+
 pub async fn unload_ollama_model(base_url: &str, model_name: &str) -> Result<()> {
     let client = Client::new();
     let body = serde_json::json!({
@@ -403,16 +410,16 @@ pub fn cancel_ollama_pull() {
 }
 
 // 生出力から JSON 部分を取り出して柔軟にパースする堅牢抽出関数
-fn extract_and_parse_json(raw_text: &str) -> Result<AnalysisResult> {
+fn extract_and_parse_json(raw_text: &str) -> Result<crate::llm::AnalysisResult> {
     let clean_text = raw_text.trim();
-    if let Ok(res) = serde_json::from_str::<AnalysisResult>(clean_text) {
+    if let Ok(res) = serde_json::from_str::<crate::llm::AnalysisResult>(clean_text) {
         return Ok(res);
     }
 
     if let (Some(start), Some(end)) = (clean_text.find('{'), clean_text.rfind('}')) {
         if start < end {
             let json_sub = &clean_text[start..=end];
-            if let Ok(res) = serde_json::from_str::<AnalysisResult>(json_sub) {
+            if let Ok(res) = serde_json::from_str::<crate::llm::AnalysisResult>(json_sub) {
                 return Ok(res);
             }
         }
@@ -431,7 +438,7 @@ async fn analyze_media_with_ollama(
     base_url: &str,
     model_name: &str,
     image_path: &Path,
-) -> Result<AnalysisResult> {
+) -> Result<crate::llm::AnalysisResult> {
     // 画像ファイルを読み込んでbase64化
     // OllamaがWebP等でエラー(Failed to load image)を起こさないよう、
     // image crateで読み込んでメモリ上でJPEGフォーマットに変換してからbase64化する
@@ -451,7 +458,7 @@ async fn analyze_media_with_ollama(
         }
     };
 
-    let prompt = crate::llm::get_vlm_prompt("Ollama", model_name);
+    let prompt = crate::llm::get_vlm_prompt("Ollama", model_name, &crate::llm::PromptConfig::default());
 
     let req_body = OllamaGenerateRequest {
         model: model_name.to_string(),
@@ -957,6 +964,32 @@ pub async fn run_scan_and_batch(
                         .await?;
                 }
 
+                // 3. 記述的タグ（tag_granularity が atomic 以外の場合のみ、descriptive_tags に入っている）を登録
+                for tag_pair in &result.descriptive_tags {
+                    let norm_en = normalize_tag_en(&tag_pair.en);
+                    let norm_ja = tag_pair.ja.trim();
+
+                    if norm_en.is_empty() {
+                        continue;
+                    }
+
+                    // 既に basic として登録済みのタグは降格させない（basic を優先）
+                    let tag_id = sqlx::query_scalar::<_, i64>(
+                        "INSERT INTO tags (name, name_ja, is_category, tag_kind) VALUES (?1, ?2, 0, 'descriptive')
+                         ON CONFLICT(name) DO UPDATE SET name_ja = COALESCE(tags.name_ja, EXCLUDED.name_ja) RETURNING id"
+                    )
+                    .bind(&norm_en)
+                    .bind(if norm_ja.is_empty() { None } else { Some(norm_ja) })
+                    .fetch_one(&pool)
+                    .await?;
+
+                    sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag_id) VALUES (?1, ?2)")
+                        .bind(media_id)
+                        .bind(tag_id)
+                        .execute(&pool)
+                        .await?;
+                }
+
                 let cat_list = result.categories.join(", ");
                 let tag_list = result.tags
                     .iter()
@@ -1113,6 +1146,8 @@ pub async fn custom_analyze_video_media(
         .await?
         .unwrap_or_else(|| "llava".to_string());
 
+    let prompt_config = load_prompt_config(pool).await;
+
     // 疎通確認
     check_ollama(&ollama_url, &ollama_model).await?;
 
@@ -1183,6 +1218,7 @@ pub async fn custom_analyze_video_media(
         if pre_ok { Some(&pre_frame_path) } else { None },
         if post_ok { Some(&post_frame_path) } else { None },
         cancel_flag.clone(),
+        &prompt_config,
     )
     .await;
 
@@ -1228,6 +1264,27 @@ pub async fn custom_analyze_video_media(
 
                 let tag_id = sqlx::query_scalar::<_, i64>(
                     "INSERT INTO tags (name, name_ja, is_category) VALUES (?1, ?2, 0) ON CONFLICT(name) DO UPDATE SET name_ja = COALESCE(EXCLUDED.name_ja, tags.name_ja) RETURNING id"
+                )
+                .bind(&clean_en)
+                .bind(&clean_ja)
+                .fetch_one(&mut *tx)
+                .await?;
+
+                sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag_id) VALUES (?1, ?2)")
+                    .bind(media_id)
+                    .bind(tag_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+
+            for tag_pair in analysis_result.descriptive_tags {
+                let clean_en = normalize_tag_en(&tag_pair.en);
+                let clean_ja = tag_pair.ja.trim().to_string();
+                if clean_en.is_empty() { continue; }
+
+                let tag_id = sqlx::query_scalar::<_, i64>(
+                    "INSERT INTO tags (name, name_ja, is_category, tag_kind) VALUES (?1, ?2, 0, 'descriptive')
+                     ON CONFLICT(name) DO UPDATE SET name_ja = COALESCE(tags.name_ja, EXCLUDED.name_ja) RETURNING id"
                 )
                 .bind(&clean_en)
                 .bind(&clean_ja)
@@ -1288,7 +1345,8 @@ async fn analyze_multi_frame_with_ollama(
     pre_frame: Option<&Path>,
     post_frame: Option<&Path>,
     cancel_flag: Arc<AtomicBool>,
-) -> Result<AnalysisResult> {
+    prompt_config: &crate::llm::PromptConfig,
+) -> Result<crate::llm::AnalysisResult> {
     let mut images_b64 = Vec::new();
 
     let encode_jpg = |path: &Path| -> Result<String> {
@@ -1320,7 +1378,7 @@ async fn analyze_multi_frame_with_ollama(
         return Err(anyhow!("Canceled before API call"));
     }
 
-    let base_prompt = crate::llm::get_vlm_prompt("Ollama", model_name);
+    let base_prompt = crate::llm::get_vlm_prompt("Ollama", model_name, prompt_config);
     let prompt = format!("{}\n\nNote: Multiple sequential video frames (3 frames: pre, main, post) are provided above. Synthesize them to generate accurate tags and categories capturing the core unified theme across frames.", base_prompt);
 
     let req_body = OllamaGenerateRequest {
@@ -1478,6 +1536,28 @@ pub async fn reanalyze_single_media(
         let tag_id = sqlx::query_scalar::<_, i64>(
             "INSERT INTO tags (name, name_ja, is_category) VALUES (?1, ?2, 0)
              ON CONFLICT(name) DO UPDATE SET name_ja = COALESCE(EXCLUDED.name_ja, tags.name_ja) RETURNING id"
+        )
+        .bind(&norm_en)
+        .bind(if norm_ja.is_empty() { None } else { Some(&norm_ja) })
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query("INSERT OR IGNORE INTO media_tags (media_id, tag_id) VALUES (?1, ?2)")
+            .bind(media_id)
+            .bind(tag_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    for tag_pair in &result.descriptive_tags {
+        let norm_en = normalize_tag_en(&tag_pair.en);
+
+        if norm_en.is_empty() { continue; }
+        let norm_ja = tag_pair.ja.trim().to_string();
+
+        let tag_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO tags (name, name_ja, is_category, tag_kind) VALUES (?1, ?2, 0, 'descriptive')
+             ON CONFLICT(name) DO UPDATE SET name_ja = COALESCE(tags.name_ja, EXCLUDED.name_ja) RETURNING id"
         )
         .bind(&norm_en)
         .bind(if norm_ja.is_empty() { None } else { Some(&norm_ja) })

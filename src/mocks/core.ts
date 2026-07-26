@@ -64,9 +64,10 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   add_tag_to_media: (args) => {
     const item = mediaState.find((m) => m.id === args.mediaId);
     if (item && !item.tags.some((t) => t.name === args.tagName)) {
-      item.tags = [...item.tags, { name: args.tagName, name_ja: args.tagNameJa }];
+      // 手動追加タグは常に basic 種別（バックエンド get_or_create_tag と同じ挙動）
+      item.tags = [...item.tags, { name: args.tagName, name_ja: args.tagNameJa, kind: 'basic' }];
     }
-    return { id: 0, name: args.tagName, name_ja: args.tagNameJa, is_category: false, count: 1 };
+    return { id: 0, name: args.tagName, name_ja: args.tagNameJa, is_category: false, count: 1, kind: 'basic' };
   },
   remove_tag_from_media: (args) => {
     const item = mediaState.find((m) => m.id === args.mediaId);
@@ -82,6 +83,50 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   suggest_tag_merges: () => [],
   get_provider_api_key: () => '',
   check_ffmpeg_installed: () => true,
+  get_effective_prompt_type: (args) => {
+    if (args.forceDetailed) return 'DETAILED';
+    const provider = String(args.provider || '').toLowerCase();
+    if (provider !== 'ollama') return 'DETAILED';
+    const match = String(args.model || '').toLowerCase().match(/(\d+(?:\.\d+)?)b/);
+    const paramSize = match ? parseFloat(match[1]) : null;
+    return paramSize !== null && paramSize >= 10 ? 'DETAILED' : 'LIGHT';
+  },
+  compare_granularity_levels: () => [
+    {
+      granularity: 'atomic',
+      categories: ['landscape'],
+      tags: [
+        { en: 'tree', ja: '木' },
+        { en: 'water_drop', ja: '水滴' },
+        { en: 'forest', ja: '森' },
+      ],
+      descriptive_tags: [],
+    },
+    {
+      granularity: 'balanced',
+      categories: ['landscape'],
+      tags: [
+        { en: 'tree', ja: '木' },
+        { en: 'water_drop', ja: '水滴' },
+        { en: 'forest', ja: '森' },
+      ],
+      descriptive_tags: [{ en: 'rain_soaked_tree', ja: '雨に濡れた木' }],
+    },
+    {
+      granularity: 'descriptive',
+      categories: ['landscape'],
+      tags: [
+        { en: 'tree', ja: '木' },
+        { en: 'water_drop', ja: '水滴' },
+        { en: 'rain', ja: '雨' },
+        { en: 'leaf', ja: '葉' },
+      ],
+      descriptive_tags: [
+        { en: 'rain_soaked_tree', ja: '雨に濡れた木' },
+        { en: 'wet_undergrowth', ja: '濡れた下草' },
+      ],
+    },
+  ],
 };
 
 export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Promise<T> {

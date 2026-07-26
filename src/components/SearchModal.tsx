@@ -190,7 +190,8 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         if (result.length >= 12) break;
       }
     }
-    return result;
+    // 基本語タグを優先し、修飾語タグは後置する
+    return result.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'descriptive' ? 1 : -1));
   };
 
   const handleApply = () => {
@@ -342,8 +343,8 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                                 onClick={() => handleAddTagToGroup(group.id, tagVal)}
                                 className="px-3 py-2 hover:bg-indigo-600/30 cursor-pointer transition flex items-center justify-between text-xs"
                               >
-                                <span className="flex items-center gap-1.5 font-medium text-indigo-200">
-                                  <Hash className="w-3.5 h-3.5 text-indigo-400" />
+                                <span className={`flex items-center gap-1.5 font-medium ${sug.kind === 'descriptive' ? 'text-slate-400' : 'text-indigo-200'}`}>
+                                  <Hash className={`w-3.5 h-3.5 ${sug.kind === 'descriptive' ? 'text-slate-500' : 'text-indigo-400'}`} />
                                   {sug.name_ja ? `${sug.name_ja} (${sug.name})` : sug.name}
                                 </span>
                                 <span className="text-[10px] text-slate-400 font-mono">

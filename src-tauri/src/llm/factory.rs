@@ -9,6 +9,7 @@ use super::gemini::GeminiProvider;
 use super::openai::OpenAiProvider;
 use super::claude::ClaudeProvider;
 use super::retry::RetryingLlmProvider;
+use super::{PromptConfig, TagGranularity};
 
 pub struct LlmFactoryConfig {
     pub provider: String,
@@ -17,6 +18,15 @@ pub struct LlmFactoryConfig {
 
 /// settings テーブルと Windows Credentials から情報を読み込んで適切な LlmProvider インスタンスを生成する
 pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProvider>, LlmFactoryConfig)> {
+    create_llm_provider_with_prompt_override(pool, None).await
+}
+
+/// prompt_override が Some の場合、settings の tag_granularity / force_detailed_prompt を無視して
+/// 指定された PromptConfig を使用する（粒度レベル比較コマンド用）
+pub async fn create_llm_provider_with_prompt_override(
+    pool: &Pool<Sqlite>,
+    prompt_override: Option<PromptConfig>,
+) -> Result<(Arc<dyn LlmProvider>, LlmFactoryConfig)> {
     let provider_name: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'llm_provider'")
         .fetch_optional(pool)
         .await?
@@ -46,6 +56,24 @@ pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProv
         .unwrap_or_else(|| "2".to_string());
     let retry_delay_sec: u64 = retry_delay_str.parse().unwrap_or(2);
 
+    let prompt_config = match prompt_override {
+        Some(cfg) => cfg,
+        None => {
+            let granularity_str: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'tag_granularity'")
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or_else(|| "atomic".to_string());
+            let force_detailed_str: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'force_detailed_prompt'")
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or_else(|| "false".to_string());
+            PromptConfig {
+                granularity: TagGranularity::from_setting(&granularity_str),
+                force_detailed: force_detailed_str == "true",
+            }
+        }
+    };
+
     let base_provider: Arc<dyn LlmProvider> = match provider_name.to_lowercase().as_str() {
         "gemini" => {
             let api_key = get_api_key("gemini")?;
@@ -53,7 +81,7 @@ pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProv
                 .fetch_optional(pool)
                 .await?
                 .unwrap_or_else(|| "gemini-2.0-flash".to_string());
-            Arc::new(GeminiProvider::new(api_key, model))
+            Arc::new(GeminiProvider::new(api_key, model, prompt_config))
         }
         "openai" => {
             let api_key = get_api_key("openai")?;
@@ -65,7 +93,7 @@ pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProv
                 .fetch_optional(pool)
                 .await?
                 .unwrap_or_else(|| "gpt-4o-mini".to_string());
-            Arc::new(OpenAiProvider::new(api_key, base_url, model))
+            Arc::new(OpenAiProvider::new(api_key, base_url, model, prompt_config))
         }
         "claude" => {
             let api_key = get_api_key("claude")?;
@@ -73,7 +101,7 @@ pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProv
                 .fetch_optional(pool)
                 .await?
                 .unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
-            Arc::new(ClaudeProvider::new(api_key, model))
+            Arc::new(ClaudeProvider::new(api_key, model, prompt_config))
         }
         _ => {
             // デフォルト: Ollama
@@ -85,7 +113,7 @@ pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProv
                 .fetch_optional(pool)
                 .await?
                 .unwrap_or_else(|| "llava".to_string());
-            Arc::new(OllamaProvider::new(url, model))
+            Arc::new(OllamaProvider::new(url, model, prompt_config))
         }
     };
 
@@ -96,7 +124,7 @@ pub async fn create_llm_provider(pool: &Pool<Sqlite>) -> Result<(Arc<dyn LlmProv
         base_provider
     };
 
-    let (prompt_style, _) = super::get_vlm_prompt_info(final_provider.name(), final_provider.model_name());
+    let (prompt_style, _) = super::get_vlm_prompt_info(final_provider.name(), final_provider.model_name(), &prompt_config);
     crate::logger::log_info(&format!("[LLM Provider] Initialized '{}' (model: '{}') using prompt style: {}", final_provider.name(), final_provider.model_name(), prompt_style.name()));
 
     let config = LlmFactoryConfig {

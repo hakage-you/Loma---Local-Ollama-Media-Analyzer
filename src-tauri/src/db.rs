@@ -104,6 +104,12 @@ async fn create_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // tag_kind カラムのマイグレーション（既存DBへの安全追加）
+    // 既存タグは複合タグを禁止するプロンプトで生成されたものなので 'basic' として扱う
+    let _ = sqlx::query("ALTER TABLE tags ADD COLUMN tag_kind TEXT NOT NULL DEFAULT 'basic';")
+        .execute(pool)
+        .await;
+
     Ok(())
 }
 
@@ -127,6 +133,8 @@ async fn seed_initial_data(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("ext_llm_retry_delay_sec", "2"),
         ("ui_language", "ja"),
         ("ffmpeg_notice_enabled", "true"),
+        ("tag_granularity", "atomic"),
+        ("force_detailed_prompt", "false"),
     ];
 
     for (key, val) in default_settings {
