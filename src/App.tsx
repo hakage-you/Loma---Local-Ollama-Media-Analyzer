@@ -113,6 +113,15 @@ function AppContent() {
       .catch(() => setFfmpegInstalled(false));
   }, []);
 
+  // ドキュメント用スクリーンショット撮影を自動化するためのフック(モックモード限定)。
+  // 例: http://localhost:xxxx/?debugOpen=settings でSettings modalを自動的に開いた状態で読み込む。
+  useEffect(() => {
+    if (import.meta.env.MODE !== 'mock') return;
+    const debugOpen = new URLSearchParams(window.location.search).get('debugOpen');
+    if (debugOpen === 'settings') setIsSettingsOpen(true);
+    if (debugOpen === 'search') setIsSearchModalOpen(true);
+  }, []);
+
   const handleSyncFolders = async () => {
     try {
       await invoke('sync_folders');

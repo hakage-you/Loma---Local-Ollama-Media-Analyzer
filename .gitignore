@@ -26,3 +26,4 @@ dist-ssr
 # for development
 implementation_plan.md
 task.md
+.claude/
