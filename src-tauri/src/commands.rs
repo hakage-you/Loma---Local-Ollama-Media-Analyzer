@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct ScanState {
     pub cancel_flag: Arc<AtomicBool>,
@@ -42,6 +42,12 @@ pub fn try_acquire_task_lock(scan_state: &ScanState) -> Result<TaskGuard, String
 pub struct TagPairItem {
     pub name: String,
     pub name_ja: Option<String>,
+    #[serde(default = "default_tag_kind")]
+    pub kind: String,
+}
+
+fn default_tag_kind() -> String {
+    "basic".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -64,6 +70,8 @@ pub struct TagItem {
     pub name_ja: Option<String>,
     pub is_category: bool,
     pub count: i64,
+    #[serde(default = "default_tag_kind")]
+    pub kind: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -221,7 +229,7 @@ pub async fn get_media(
 
         let tag_query = format!(
             r#"
-            SELECT mt.media_id, t.name, t.name_ja, t.is_category
+            SELECT mt.media_id, t.name, t.name_ja, t.is_category, t.tag_kind
             FROM media_tags mt
             JOIN tags t ON mt.tag_id = t.id
             WHERE mt.media_id IN ({})
@@ -229,12 +237,12 @@ pub async fn get_media(
             ids_str
         );
 
-        let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64)>(&tag_query)
+        let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(&tag_query)
             .fetch_all(pool)
             .await
             .map_err(|e| e.to_string())?;
 
-        for (m_id, tag_name, tag_name_ja, is_cat) in tag_rows {
+        for (m_id, tag_name, tag_name_ja, is_cat, tag_kind) in tag_rows {
             let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new()));
             if is_cat == 1 {
                 entry.0.push(tag_name);
@@ -242,6 +250,7 @@ pub async fn get_media(
                 entry.1.push(TagPairItem {
                     name: tag_name,
                     name_ja: tag_name_ja,
+                    kind: tag_kind,
                 });
             }
         }
@@ -410,6 +419,138 @@ pub async fn update_setting(
     Ok(())
 }
 
+/// 現在のプロバイダー・モデル・強制フラグから実際に使用されるプロンプト種別 ("DETAILED" | "LIGHT") を返す。
+/// DBを読まない純粋関数のラッパーで、設定画面が未保存の選択状態を反映するために使う。
+#[tauri::command]
+pub fn get_effective_prompt_type(provider: String, model: String, force_detailed: bool) -> String {
+    let config = crate::llm::PromptConfig {
+        granularity: crate::llm::TagGranularity::Atomic,
+        force_detailed,
+    };
+    let (kind, _) = crate::llm::get_vlm_prompt_info(&provider, &model, &config);
+    match kind {
+        crate::llm::VlmPromptType::Detailed => "DETAILED".to_string(),
+        crate::llm::VlmPromptType::Light => "LIGHT".to_string(),
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GranularityComparisonItem {
+    pub granularity: String,
+    pub categories: Vec<String>,
+    pub tags: Vec<crate::llm::TagPair>,
+    pub descriptive_tags: Vec<crate::llm::TagPair>,
+    pub error: Option<String>,
+}
+
+/// フロントエンドへ都度通知する進捗イベント ("granularity_comparison_progress")
+#[derive(Serialize, Clone)]
+pub struct GranularityComparisonProgress {
+    /// "running" | "done"
+    pub status: String,
+    pub item: Option<GranularityComparisonItem>,
+    pub granularity: String,
+}
+
+/// 検証用: 指定画像を Lv1(atomic) / Lv2(balanced) / Lv3(descriptive) の3プロンプトで
+/// 連続解析し、結果を並べて返す。DBには一切書き込まない。
+/// レベルごとに "granularity_comparison_progress" イベントを発火し、
+/// モーダルが全件完了を待たずに進捗を表示できるようにする。
+#[tauri::command]
+pub async fn compare_granularity_levels(
+    image_path: String,
+    app_handle: AppHandle,
+    db_state: State<'_, DbState>,
+) -> Result<Vec<GranularityComparisonItem>, String> {
+    let pool = &db_state.pool;
+    let path = Path::new(&image_path);
+    if !path.exists() {
+        return Err("指定された画像ファイルが見つかりません".to_string());
+    }
+
+    let levels = [
+        crate::llm::TagGranularity::Atomic,
+        crate::llm::TagGranularity::Balanced,
+        crate::llm::TagGranularity::Descriptive,
+    ];
+
+    let mut items = Vec::new();
+    for granularity in levels {
+        let granularity_str = granularity.as_setting_str().to_string();
+
+        let _ = app_handle.emit(
+            "granularity_comparison_progress",
+            GranularityComparisonProgress {
+                status: "running".to_string(),
+                item: None,
+                granularity: granularity_str.clone(),
+            },
+        );
+
+        // 比較の目的上、常に高精度プロンプトを強制して粒度の差を明確にする
+        let prompt_override = crate::llm::PromptConfig { granularity, force_detailed: true };
+
+        let item = match crate::llm::factory::create_llm_provider_with_prompt_override(pool, Some(prompt_override)).await {
+            Ok((provider, _)) => match provider.analyze_image(path).await {
+                Ok(result) => GranularityComparisonItem {
+                    granularity: granularity_str.clone(),
+                    categories: result.categories,
+                    tags: result.tags,
+                    descriptive_tags: result.descriptive_tags,
+                    error: None,
+                },
+                Err(e) => GranularityComparisonItem {
+                    granularity: granularity_str.clone(),
+                    categories: Vec::new(),
+                    tags: Vec::new(),
+                    descriptive_tags: Vec::new(),
+                    error: Some(e.to_string()),
+                },
+            },
+            Err(e) => GranularityComparisonItem {
+                granularity: granularity_str.clone(),
+                categories: Vec::new(),
+                tags: Vec::new(),
+                descriptive_tags: Vec::new(),
+                error: Some(e.to_string()),
+            },
+        };
+
+        let _ = app_handle.emit(
+            "granularity_comparison_progress",
+            GranularityComparisonProgress {
+                status: "done".to_string(),
+                item: Some(item.clone()),
+                granularity: granularity_str,
+            },
+        );
+
+        items.push(item);
+    }
+
+    // Ollama利用時は検証後に必ずVRAMを解放する
+    let provider_name: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'llm_provider'")
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| "ollama".to_string());
+    if provider_name.to_lowercase() == "ollama" {
+        let url: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_url'")
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| "http://localhost:11434".to_string());
+        let model: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_model'")
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None)
+            .unwrap_or_else(|| "llava".to_string());
+        let _ = crate::batch::unload_ollama_model(&url, &model).await;
+    }
+
+    Ok(items)
+}
+
 #[tauri::command]
 pub async fn get_available_models(db_state: State<'_, DbState>) -> Result<Vec<String>, String> {
     let url: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_url'")
@@ -439,12 +580,12 @@ pub fn cancel_ollama_pull() {
 
 #[tauri::command]
 pub async fn get_all_tags(db_state: State<'_, DbState>) -> Result<Vec<TagItem>, String> {
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, i64)>(
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, i64, String)>(
         r#"
-        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count
+        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count, t.tag_kind
         FROM tags t
         LEFT JOIN media_tags mt ON t.id = mt.tag_id
-        GROUP BY t.id, t.name, t.name_ja, t.is_category
+        GROUP BY t.id, t.name, t.name_ja, t.is_category, t.tag_kind
         ORDER BY t.is_category DESC, count DESC, COALESCE(t.name_ja, t.name) ASC
         "#
     )
@@ -454,12 +595,13 @@ pub async fn get_all_tags(db_state: State<'_, DbState>) -> Result<Vec<TagItem>, 
 
     Ok(rows
         .into_iter()
-        .map(|(id, name, name_ja, is_cat, count)| TagItem {
+        .map(|(id, name, name_ja, is_cat, count, kind)| TagItem {
             id,
             name,
             name_ja,
             is_category: is_cat == 1,
             count,
+            kind,
         })
         .collect())
 }
@@ -497,11 +639,11 @@ pub async fn get_or_create_tag(
 
     let existing = sqlx::query(
         r#"
-        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count
+        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count, t.tag_kind
         FROM tags t
         LEFT JOIN media_tags mt ON t.id = mt.tag_id
         WHERE t.name = ?1
-        GROUP BY t.id, t.name, t.name_ja, t.is_category
+        GROUP BY t.id, t.name, t.name_ja, t.is_category, t.tag_kind
         "#
     )
     .bind(&clean_name)
@@ -528,11 +670,13 @@ pub async fn get_or_create_tag(
             name_ja: cur_name_ja,
             is_category: r.get::<i64, _>("is_category") == 1,
             count: r.get("count"),
+            kind: r.get("tag_kind"),
         });
     }
 
+    // 手動作成されるタグは常に basic 種別として扱う
     let res = sqlx::query(
-        "INSERT INTO tags (name, name_ja, is_category) VALUES (?1, ?2, 0)"
+        "INSERT INTO tags (name, name_ja, is_category, tag_kind) VALUES (?1, ?2, 0, 'basic')"
     )
     .bind(&clean_name)
     .bind(&name_ja)
@@ -547,6 +691,7 @@ pub async fn get_or_create_tag(
         name_ja,
         is_category: false,
         count: 0,
+        kind: "basic".to_string(),
     })
 }
 
@@ -1159,12 +1304,12 @@ pub async fn run_suggest_tag_merges_logic(
     .execute(pool)
     .await;
 
-    let rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, i64)>(
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, i64, String)>(
         r#"
-        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count
+        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count, t.tag_kind
         FROM tags t
         LEFT JOIN media_tags mt ON t.id = mt.tag_id
-        GROUP BY t.id, t.name, t.name_ja, t.is_category
+        GROUP BY t.id, t.name, t.name_ja, t.is_category, t.tag_kind
         ORDER BY t.is_category DESC, count DESC, COALESCE(t.name_ja, t.name) ASC
         "#
     )
@@ -1174,12 +1319,13 @@ pub async fn run_suggest_tag_merges_logic(
 
     let tags: Vec<TagItem> = rows
         .into_iter()
-        .map(|(id, name, name_ja, is_cat, count)| TagItem {
+        .map(|(id, name, name_ja, is_cat, count, kind)| TagItem {
             id,
             name,
             name_ja,
             is_category: is_cat == 1,
             count,
+            kind,
         })
         .collect();
 
@@ -1231,6 +1377,11 @@ pub async fn run_suggest_tag_merges_logic(
 
             let pair_key = (p1.item.id.min(p2.item.id), p1.item.id.max(p2.item.id));
             if paired_keys.contains(&pair_key) {
+                continue;
+            }
+
+            // 種別(基本語/記述的)をまたぐペアはマージ候補にしない
+            if p1.item.kind != p2.item.kind {
                 continue;
             }
 
@@ -1372,7 +1523,7 @@ pub async fn run_suggest_tag_merges_logic(
                                         if arr.len() == 2 {
                                             if let (Some(name1), Some(name2)) = (arr[0].as_str(), arr[1].as_str()) {
                                                 if let (Some(t1), Some(t2)) = (find_tag(name1), find_tag(name2)) {
-                                                    if t1.id != t2.id {
+                                                    if t1.id != t2.id && t1.kind == t2.kind {
                                                         let pkey = (t1.id.min(t2.id), t1.id.max(t2.id));
                                                         if !paired_keys.contains(&pkey) {
                                                             paired_keys.insert(pkey);

@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::traits::LlmProvider;
-use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult};
+use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult, PromptConfig};
 
 #[derive(Serialize)]
 struct ImageSource {
@@ -52,10 +52,11 @@ pub struct ClaudeProvider {
     client: Client,
     api_key: String,
     model_name: String,
+    prompt_config: PromptConfig,
 }
 
 impl ClaudeProvider {
-    pub fn new(api_key: String, model_name: String) -> Self {
+    pub fn new(api_key: String, model_name: String, prompt_config: PromptConfig) -> Self {
         let model = if model_name.trim().is_empty() {
             "claude-3-5-sonnet-20241022".to_string()
         } else {
@@ -65,6 +66,7 @@ impl ClaudeProvider {
             client: Client::new(),
             api_key,
             model_name: model,
+            prompt_config,
         }
     }
 
@@ -106,7 +108,7 @@ impl LlmProvider for ClaudeProvider {
 
         let base64_img = Self::prepare_base64_image(image_path)?;
 
-        let prompt = get_vlm_prompt("Claude", &self.model_name);
+        let prompt = get_vlm_prompt("Claude", &self.model_name, &self.prompt_config);
         let req_body = ClaudeMessagesRequest {
             model: self.model_name.clone(),
             max_tokens: 2048,
@@ -178,7 +180,7 @@ impl LlmProvider for ClaudeProvider {
             return Err(anyhow!("No valid frames found for Claude multi-frame analysis"));
         }
 
-        let prompt = get_vlm_prompt("Claude", &self.model_name);
+        let prompt = get_vlm_prompt("Claude", &self.model_name, &self.prompt_config);
         let multi_prompt = format!(
             "{}\n\nNote: Multiple sequential video frames (3 frames: pre, main, post) are provided above. Synthesize them to generate accurate tags and categories.",
             prompt

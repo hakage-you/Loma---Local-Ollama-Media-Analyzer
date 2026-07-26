@@ -34,7 +34,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
   onSelectItem,
   onSelectTagFilter,
 }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   if (loading && items.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-[400px]">
@@ -155,7 +155,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                           onClick={(e) => {
                             e.stopPropagation();
                             if (onSelectTagFilter) {
-                              onSelectTagFilter(tagObj.name);
+                              onSelectTagFilter(language === 'ja' ? displayTag : tagObj.name);
                             }
                           }}
                           className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-slate-800 text-slate-300 hover:text-indigo-200 hover:bg-indigo-900/50 rounded text-[10px] truncate max-w-[120px] cursor-pointer transition"

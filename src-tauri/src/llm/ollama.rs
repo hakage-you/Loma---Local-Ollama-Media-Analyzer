@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::traits::LlmProvider;
-use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult};
+use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult, PromptConfig};
 
 #[derive(Serialize)]
 struct OllamaGenerateOptions {
@@ -32,14 +32,16 @@ pub struct OllamaProvider {
     client: Client,
     base_url: String,
     model_name: String,
+    prompt_config: PromptConfig,
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: String, model_name: String) -> Self {
+    pub fn new(base_url: String, model_name: String, prompt_config: PromptConfig) -> Self {
         Self {
             client: Client::new(),
             base_url,
             model_name,
+            prompt_config,
         }
     }
 
@@ -77,7 +79,7 @@ impl LlmProvider for OllamaProvider {
 
         let base64_img = Self::prepare_base64_image(image_path)?;
         
-        let prompt = get_vlm_prompt("Ollama", &self.model_name);
+        let prompt = get_vlm_prompt("Ollama", &self.model_name, &self.prompt_config);
         let req_body = OllamaGenerateRequest {
             model: self.model_name.clone(),
             prompt: prompt.to_string(),
@@ -125,7 +127,7 @@ impl LlmProvider for OllamaProvider {
             return Err(anyhow!("No valid frames found for analysis"));
         }
 
-        let prompt = get_vlm_prompt("Ollama", &self.model_name);
+        let prompt = get_vlm_prompt("Ollama", &self.model_name, &self.prompt_config);
         let multi_prompt = format!(
             "{}\n\nNote: Multiple sequential video frames (3 frames: pre, main, post) are provided above. Synthesize them to generate accurate tags and categories.",
             prompt

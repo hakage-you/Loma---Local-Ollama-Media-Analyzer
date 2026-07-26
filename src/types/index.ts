@@ -1,6 +1,9 @@
+export type TagKind = 'basic' | 'descriptive';
+
 export interface TagPairItem {
   name: string;
   name_ja?: string;
+  kind: TagKind;
 }
 
 export interface MediaItem {
@@ -21,6 +24,7 @@ export interface TagItem {
   name_ja?: string;
   is_category: boolean;
   count: number;
+  kind: TagKind;
 }
 
 export interface ScanFolderItem {
@@ -72,5 +76,22 @@ export interface SearchGroup {
   id: string;
   operator: 'and' | 'or' | 'not';
   tags: string[];
+}
+
+// --- タグ付与粒度設定用の型定義 ---
+
+export type TagGranularity = 'atomic' | 'balanced' | 'descriptive';
+
+export interface TagPair {
+  en: string;
+  ja: string;
+}
+
+export interface GranularityComparisonItem {
+  granularity: TagGranularity;
+  categories: string[];
+  tags: TagPair[];
+  descriptive_tags: TagPair[];
+  error?: string;
 }
 

@@ -6,10 +6,9 @@ import { useTranslation } from '../contexts/I18nContext';
 interface AboutModalProps {
   open: boolean;
   onClose: () => void;
-  ffmpegInstalled?: boolean;
 }
 
-export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose, ffmpegInstalled = true }) => {
+export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
   const { t } = useTranslation();
 
   if (!open) return null;
@@ -57,22 +56,9 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose, ffmpegIns
             <span className="font-semibold text-white">@hakageyou</span>
           </div>
 
-          <div className="flex justify-between items-center pb-2 border-b border-white/5">
-            <span className="text-slate-400">{t('about.copyright', 'Copyright')}:</span>
-            <span className="font-mono text-slate-300">© 2026 @hakageyou</span>
-          </div>
-
           <div className="flex justify-between items-center">
-            <span className="text-slate-400">FFmpeg Status:</span>
-            {ffmpegInstalled ? (
-              <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded font-semibold text-[10px]">
-                Available
-              </span>
-            ) : (
-              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded font-semibold text-[10px]">
-                Not Installed
-              </span>
-            )}
+            <span className="text-slate-400">{t('about.copyright', 'Copyright')}:</span>
+            <span className="font-mono text-slate-300">©2026 @hakageyou</span>
           </div>
         </div>
 

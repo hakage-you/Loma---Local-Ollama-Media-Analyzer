@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::traits::LlmProvider;
-use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult};
+use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult, PromptConfig};
 
 #[derive(Serialize)]
 struct InlineData {
@@ -62,10 +62,11 @@ pub struct GeminiProvider {
     client: Client,
     api_key: String,
     model_name: String,
+    prompt_config: PromptConfig,
 }
 
 impl GeminiProvider {
-    pub fn new(api_key: String, model_name: String) -> Self {
+    pub fn new(api_key: String, model_name: String, prompt_config: PromptConfig) -> Self {
         let model = if model_name.trim().is_empty() {
             "gemini-2.0-flash".to_string()
         } else {
@@ -76,6 +77,7 @@ impl GeminiProvider {
             client: Client::new(),
             api_key,
             model_name: model,
+            prompt_config,
         }
     }
 
@@ -117,7 +119,7 @@ impl LlmProvider for GeminiProvider {
 
         let base64_img = Self::prepare_base64_image(image_path)?;
 
-        let prompt = get_vlm_prompt("Google Gemini", &self.model_name);
+        let prompt = get_vlm_prompt("Google Gemini", &self.model_name, &self.prompt_config);
         let req_body = GeminiGenerateRequest {
             contents: vec![Content {
                 parts: vec![
@@ -178,7 +180,7 @@ impl LlmProvider for GeminiProvider {
             return Err(anyhow!("Gemini API Key is missing. Please set your API key in Settings."));
         }
 
-        let prompt = get_vlm_prompt("Google Gemini", &self.model_name);
+        let prompt = get_vlm_prompt("Google Gemini", &self.model_name, &self.prompt_config);
         let multi_prompt = format!(
             "{}\n\nNote: Multiple sequential video frames (3 frames: pre, main, post) are provided above. Synthesize them to generate accurate tags and categories.",
             prompt

@@ -87,7 +87,10 @@
     "sort_count_asc": "Count (Low → High)",
     "sort_name_asc": "Name (A → Z)",
     "filter_placeholder": "Filter tags...",
-    "scan_warning": "Currently, image/media analysis is running in the background, so tag editing/merging is temporarily locked."
+    "scan_warning": "Currently, image/media analysis is running in the background, so tag editing/merging is temporarily locked.",
+    "kind_all": "All",
+    "kind_basic": "Basic",
+    "kind_descriptive": "Descriptive"
   },
   "folder_modal": {
     "title": "Manage Scan Folders",
@@ -121,7 +124,16 @@
     "pull_button": "Download",
     "pulling": "Downloading...",
     "downloaded": "Installed",
-    "ollama_not_installed": "Ollama is not installed or service is not running. Please start or install Ollama to use local VLM features."
+    "ollama_not_installed": "Ollama is not installed or service is not running. Please start or install Ollama to use local VLM features.",
+    "prompt_section": "Analysis Prompt Settings",
+    "tag_granularity": "Tag Granularity",
+    "tag_granularity_help": "Controls how much tags are decomposed when using the DETAILED prompt. Basic tags always stay at 5-10, while descriptive tags (e.g. \"rain_soaked_tree\") are added based on the granularity level.",
+    "granularity_atomic": "Lv1: Atomic (current)",
+    "granularity_balanced": "Lv2: Balanced",
+    "granularity_descriptive": "Lv3: Descriptive",
+    "granularity_disabled_light": "The current model uses the LIGHT prompt, so tag granularity does not apply. Enable \"Force Detailed Prompt\" to use this setting.",
+    "granularity_changed_notice": "Tag granularity changed. The new setting only applies to media analyzed from now on. To align tags on existing media, re-analyze them from Folder Management.",
+    "granularity_try": "Try Granularity (Select Image)"
   },
   "logs": {
     "title": "Process Logs",

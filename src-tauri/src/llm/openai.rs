@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::traits::LlmProvider;
-use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult};
+use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult, PromptConfig};
 
 #[derive(Serialize)]
 struct ImageUrlDetail {
@@ -54,10 +54,11 @@ pub struct OpenAiProvider {
     api_key: String,
     base_url: String,
     model_name: String,
+    prompt_config: PromptConfig,
 }
 
 impl OpenAiProvider {
-    pub fn new(api_key: String, base_url: String, model_name: String) -> Self {
+    pub fn new(api_key: String, base_url: String, model_name: String, prompt_config: PromptConfig) -> Self {
         let url = if base_url.trim().is_empty() {
             "https://api.openai.com/v1".to_string()
         } else {
@@ -73,6 +74,7 @@ impl OpenAiProvider {
             api_key,
             base_url: url,
             model_name: model,
+            prompt_config,
         }
     }
 
@@ -115,7 +117,7 @@ impl LlmProvider for OpenAiProvider {
         let base64_img = Self::prepare_base64_image(image_path)?;
         let data_url = format!("data:image/jpeg;base64,{}", base64_img);
 
-        let prompt = get_vlm_prompt("OpenAI", &self.model_name);
+        let prompt = get_vlm_prompt("OpenAI", &self.model_name, &self.prompt_config);
         let req_body = OpenAiChatRequest {
             model: self.model_name.clone(),
             messages: vec![Message {
@@ -159,7 +161,7 @@ impl LlmProvider for OpenAiProvider {
             return Err(anyhow!("OpenAI API Key is missing. Please set your API key in Settings."));
         }
 
-        let prompt = get_vlm_prompt("OpenAI", &self.model_name);
+        let prompt = get_vlm_prompt("OpenAI", &self.model_name, &self.prompt_config);
         let multi_prompt = format!(
             "{}\n\nNote: Multiple sequential video frames (3 frames: pre, main, post) are provided above. Synthesize them to generate accurate tags and categories.",
             prompt

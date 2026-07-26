@@ -76,6 +76,8 @@ pub fn run() {
             commands::check_ffmpeg_installed,
             commands::sync_folders,
             commands::get_system_vram_gb,
+            commands::get_effective_prompt_type,
+            commands::compare_granularity_levels,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

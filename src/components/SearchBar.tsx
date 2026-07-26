@@ -101,12 +101,15 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
   const query = inputTag.trim().toLowerCase();
   const suggestions = query
-    ? freeTags.filter(
-        (t) =>
-          (t.name.toLowerCase().includes(query) || (t.name_ja && t.name_ja.toLowerCase().includes(query))) &&
-          !selectedTags.includes(t.name_ja || t.name) &&
-          !selectedTags.includes(t.name)
-      )
+    ? freeTags
+        .filter(
+          (t) =>
+            (t.name.toLowerCase().includes(query) || (t.name_ja && t.name_ja.toLowerCase().includes(query))) &&
+            !selectedTags.includes(t.name_ja || t.name) &&
+            !selectedTags.includes(t.name)
+        )
+        // 基本語タグを優先し、修飾語タグは後置する
+        .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'descriptive' ? 1 : -1))
     : [];
 
 
@@ -226,10 +229,12 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                               setInputTag('');
                               setIsFocused(false);
                             }}
-                            className="w-full flex items-center justify-between px-3 py-2 text-xs text-slate-200 hover:text-white hover:bg-indigo-600/60 rounded-lg transition text-left cursor-pointer group"
+                            className={`w-full flex items-center justify-between px-3 py-2 text-xs hover:text-white hover:bg-indigo-600/60 rounded-lg transition text-left cursor-pointer group ${
+                              st.kind === 'descriptive' ? 'text-slate-400' : 'text-slate-200'
+                            }`}
                           >
                             <span className="flex items-center gap-1.5 font-medium">
-                              <Hash className="w-3.5 h-3.5 text-indigo-400 group-hover:text-indigo-200" />
+                              <Hash className={`w-3.5 h-3.5 group-hover:text-indigo-200 ${st.kind === 'descriptive' ? 'text-slate-500' : 'text-indigo-400'}`} />
                               {st.name_ja ? `${st.name_ja} (${st.name})` : st.name}
                             </span>
                             <span className="text-[10px] text-slate-500 group-hover:text-indigo-200 font-mono">
