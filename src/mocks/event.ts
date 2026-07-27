@@ -1,10 +1,32 @@
-// モック版 @tauri-apps/api/event。バックエンドからのイベントは発生しないため no-op で解除関数を返すだけ。
+// モック版 @tauri-apps/api/event。
+// 通常はバックエンドからのイベントが発生しないため実質 no-op だが、
+// `?debugScan=` 指定時のみ進捗イベントを疑似発火し、進捗パネルを描画できるようにする。
+import { startScanSimulatorIfRequested } from './scanSimulator';
+
 export type UnlistenFn = () => void;
+
+type Handler = (event: { payload: any }) => void;
+
+const handlers = new Map<string, Set<Handler>>();
 
 export async function listen<T>(
   event: string,
-  _handler: (event: { payload: T }) => void
+  handler: (event: { payload: T }) => void
 ): Promise<UnlistenFn> {
-  console.info(`[mock event] listen("${event}") registered (no events will fire)`);
-  return () => {};
+  let set = handlers.get(event);
+  if (!set) {
+    set = new Set();
+    handlers.set(event, set);
+  }
+  set.add(handler as Handler);
+  console.info(`[mock event] listen("${event}") registered`);
+  return () => {
+    handlers.get(event)?.delete(handler as Handler);
+  };
 }
+
+function emitMock(event: string, payload: any): void {
+  handlers.get(event)?.forEach((h) => h({ payload }));
+}
+
+startScanSimulatorIfRequested(emitMock);

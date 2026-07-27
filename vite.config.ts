@@ -7,6 +7,10 @@ import fs from "node:fs";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+const appVersion = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, "package.json"), "utf-8")
+).version as string;
+
 // `npm run dev:mock` (--mode mock) の時だけ有効化する、ドキュメント用スクリーンショット撮影向けの
 // 静的サムネイル配信プラグイン。test_assets/mock/ 配下のファイルを /mock-assets/<filename> で返す。
 function mockAssetsPlugin(): Plugin {
@@ -31,6 +35,10 @@ function mockAssetsPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => ({
   plugins: [react(), tailwindcss(), ...(mode === "mock" ? [mockAssetsPlugin()] : [])],
+
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
 
   resolve: {
     alias:

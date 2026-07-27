@@ -135,6 +135,12 @@ async fn seed_initial_data(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("ffmpeg_notice_enabled", "true"),
         ("tag_granularity", "atomic"),
         ("force_detailed_prompt", "false"),
+        // 0 = プロンプト種別・タグ粒度から自動決定（thinking対応モデルの推論トークンを考慮）
+        ("ollama_num_ctx", "0"),
+        // 送信前に画像の長辺をこのピクセル数まで縮小する（0 で無効）
+        ("ollama_max_image_edge", "1536"),
+        // LLMリクエストの詳細診断ログ（開発・障害調査用）
+        ("llm_debug_logging", "false"),
     ];
 
     for (key, val) in default_settings {
