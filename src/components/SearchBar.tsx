@@ -47,29 +47,59 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const [inputTag, setInputTag] = useState('');
   const [isFocused, setIsFocused] = useState(false);
 
-  const startTimeRef = useRef<number | null>(null);
-  const startCurrentRef = useRef<number>(0);
+  // 残り時間の計測基準点。
+  // 進捗イベントは「登録フェーズ」と「解析フェーズ」で系列が切り替わり、
+  // 切替時に current が 1 へ巻き戻る。系列をまたいで平均を取ると、
+  // 高速な登録処理の速度で低速な解析処理を見積もってしまうため系列ごとに取り直す。
+  const baselineRef = useRef<{ current: number; time: number } | null>(null);
+  // 系列の切り替わりは「直前のイベント」との比較でしか判定できない。
+  // 新規スキャンでは両フェーズの total が同数になり得るので total の変化だけでは足りず、
+  // current が巻き戻ったこと（例: 838 → 1）が唯一の手掛かりになる。
+  const lastProgressRef = useRef<{ total: number; current: number } | null>(null);
+
+  // 1件の解析に数分かかるため、進捗イベントが届かない間も残り時間を更新する
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!scanning) return;
+    const id = setInterval(() => setTick((v) => v + 1), 1000);
+    return () => clearInterval(id);
+  }, [scanning]);
 
   useEffect(() => {
-    if (scanning && progress) {
-      if (startTimeRef.current === null) {
-        startTimeRef.current = Date.now();
-        startCurrentRef.current = Math.max(0, progress.current - 1);
-      }
-    } else if (!scanning) {
-      startTimeRef.current = null;
+    if (!scanning) {
+      baselineRef.current = null;
+      lastProgressRef.current = null;
+      return;
     }
-  }, [scanning]);
+    // スキャン実行中にアプリを起動した場合、scanning が true になった時点では
+    // progress が null のことがある。progress を依存に含めることで、
+    // 最初の進捗イベントが届いた時点で確実に基準を取得する。
+    if (!progress) return;
+
+    const last = lastProgressRef.current;
+    // 初回、フェーズ切替(totalが変化)、または current の巻き戻り = 新しい系列
+    const isNewSeries =
+      !last || last.total !== progress.total || progress.current < last.current;
+
+    if (isNewSeries) {
+      baselineRef.current = { current: progress.current, time: Date.now() };
+    }
+    lastProgressRef.current = { total: progress.total, current: progress.current };
+  }, [scanning, progress]);
 
   let speedText = '';
   let etaText = '';
-  if (scanning && progress && startTimeRef.current) {
-    const elapsedMs = Date.now() - startTimeRef.current;
-    const processedItems = progress.current - startCurrentRef.current;
+  const baseline = baselineRef.current;
+  if (scanning && progress && baseline) {
+    const elapsedMs = Date.now() - baseline.time;
+    // progress.current は「解析中の件番号」であり完了数ではない。
+    // 基準取得時の件番号との差が、実際に完了した件数になる。
+    const processedItems = progress.current - baseline.current;
 
     if (processedItems > 0 && elapsedMs > 500) {
       const secPerItem = (elapsedMs / 1000) / processedItems;
-      const itemsRemaining = Math.max(0, progress.total - progress.current);
+      // 解析中の1件も残りに含める
+      const itemsRemaining = Math.max(0, progress.total - progress.current + 1);
       const etaSec = Math.round(secPerItem * itemsRemaining);
 
       const days = Math.floor(etaSec / 86400);
@@ -92,8 +122,10 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
       speedText = `${secPerItem.toFixed(1)} ${secUnit}`;
     } else {
+      // 1件目が完了するまでは平均速度を出せないため、その旨を明示する
+      // （従来の "--:--" は不具合と区別がつかなかった）
       speedText = t('progress.calculating', '計算中...');
-      etaText = `${t('progress.eta', '残り時間')}: --:--`;
+      etaText = `${t('progress.eta', '残り時間')}: ${t('progress.measuring', '計測中')}`;
     }
   }
 

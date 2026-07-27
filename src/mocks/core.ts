@@ -9,6 +9,7 @@ import {
   MOCK_LOGS,
 } from './data';
 import { MediaItem, TagItem } from '../types';
+import { isMockScanRunning } from './scanSimulator';
 
 // 開発中のスクリーンショット撮影用モック(`vite --mode mock` 時のみ有効)。
 // 実際の @tauri-apps/api/core の invoke / convertFileSrc を置き換える。
@@ -52,7 +53,8 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_scan_folders: () => scanFoldersState,
   get_settings: () => settingsState,
   get_available_models: () => MOCK_AVAILABLE_MODELS,
-  get_scan_status: () => scanning,
+  // `?debugScan=mid` では「起動時点で既にスキャン実行中」を再現する
+  get_scan_status: () => scanning || isMockScanRunning(),
   get_app_logs: () => MOCK_LOGS,
   get_system_vram_gb: () => MOCK_VRAM_GB,
   update_setting: (args) => {

@@ -120,6 +120,7 @@ function AppContent() {
     const debugOpen = new URLSearchParams(window.location.search).get('debugOpen');
     if (debugOpen === 'settings') setIsSettingsOpen(true);
     if (debugOpen === 'search') setIsSearchModalOpen(true);
+    if (debugOpen === 'about') setIsAboutOpen(true);
   }, []);
 
   const handleSyncFolders = async () => {

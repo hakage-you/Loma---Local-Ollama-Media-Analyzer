@@ -296,8 +296,31 @@ pub fn get_vlm_prompt_info(provider_name: &str, model_name: &str, config: &Promp
 }
 
 /// プロンプト本文のみを返す便利関数
+#[allow(dead_code)]
 pub fn get_vlm_prompt(provider_name: &str, model_name: &str, config: &PromptConfig) -> String {
     get_vlm_prompt_info(provider_name, model_name, config).1
+}
+
+/// プロンプト種別と粒度から、Ollama へ渡す num_ctx の推奨初期値を返す。
+///
+/// 背景: qwen3-vl 系のような thinking 対応モデルは、応答本文を出す前に
+/// 推論トークンを大量に消費する。12MP 写真は画像だけで約4,000トークンを占めるため、
+/// 従来の固定値 8192 では粒度Lv2/Lv3で生成が途中で打ち切られ
+/// （done_reason="length"）、本文が空のまま返っていた。
+///
+/// 実測値（qwen3-vl:30b / 12MP写真 / num_ctx=8192）:
+///   Lv1(atomic)      : prompt 4,408 + 生成 2,193 = 6,601 → 成功
+///   Lv3(descriptive) : prompt 4,674 + 生成 3,518〜5,413 → 打ち切り
+pub fn recommended_num_ctx(prompt_type: VlmPromptType, granularity: TagGranularity) -> usize {
+    match prompt_type {
+        // 軽量モデル向けLIGHTプロンプトは出力も推論も短いため従来値で足りる
+        VlmPromptType::Light => 8192,
+        VlmPromptType::Detailed => match granularity {
+            TagGranularity::Atomic => 12288,
+            TagGranularity::Balanced => 16384,
+            TagGranularity::Descriptive => 16384,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -393,6 +416,37 @@ mod tests {
         for g in [TagGranularity::Atomic, TagGranularity::Balanced, TagGranularity::Descriptive] {
             assert_eq!(TagGranularity::from_setting(g.as_setting_str()), g);
         }
+    }
+
+    #[test]
+    fn detailed_prompt_gets_more_context_than_light_prompt() {
+        // LIGHT は軽量モデル向けで出力も短いため従来値のままでよい
+        assert_eq!(recommended_num_ctx(VlmPromptType::Light, TagGranularity::Descriptive), 8192);
+        // DETAILED は thinking 対応モデルの推論トークンを吸収できるだけの余裕が必要
+        assert!(recommended_num_ctx(VlmPromptType::Detailed, TagGranularity::Atomic) > 8192);
+    }
+
+    #[test]
+    fn higher_granularity_never_gets_less_context() {
+        // 粒度を上げるほど推論・出力が伸びるため、確保する num_ctx が減ってはならない
+        let atomic = recommended_num_ctx(VlmPromptType::Detailed, TagGranularity::Atomic);
+        let balanced = recommended_num_ctx(VlmPromptType::Detailed, TagGranularity::Balanced);
+        let descriptive = recommended_num_ctx(VlmPromptType::Detailed, TagGranularity::Descriptive);
+        assert!(balanced >= atomic);
+        assert!(descriptive >= balanced);
+    }
+
+    #[test]
+    fn descriptive_context_covers_observed_worst_case_usage() {
+        // 実測ワーストケース (qwen3-vl:30b / 粒度Lv3):
+        //   縮小前の12MP写真 = プロンプト 4,674 トークン
+        //   生成(thinking込み) = 6,249 トークン
+        // Lv3 の推奨値はこれを収容できなければ done_reason="length" で本文が空になる。
+        const OBSERVED_WORST_CASE_TOKENS: usize = 4_674 + 6_249;
+        assert!(
+            recommended_num_ctx(VlmPromptType::Detailed, TagGranularity::Descriptive)
+                >= OBSERVED_WORST_CASE_TOKENS
+        );
     }
 
     #[test]

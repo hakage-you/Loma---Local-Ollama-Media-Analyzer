@@ -5,7 +5,7 @@ mod db;
 mod llm;
 mod logger;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -17,6 +17,12 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             logger::init_logger(&handle);
+            logger::log_info(&format!(
+                "===== Loma v{} started (os: {}, arch: {}) =====",
+                app.package_info().version,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ));
             tauri::async_runtime::block_on(async move {
                 let pool = db::init_db(&handle)
                     .await
@@ -79,7 +85,29 @@ pub fn run() {
             commands::get_effective_prompt_type,
             commands::compare_granularity_levels,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            // ウィンドウを閉じる等でアプリ終了が要求された時点。
+            // スキャン実行中なら解析中のメディアが中断されるため、その事実を残す。
+            tauri::RunEvent::ExitRequested { .. } => {
+                let scan_state = app_handle.state::<commands::ScanState>();
+                if scan_state.is_running.load(Ordering::Relaxed) {
+                    // 終了要求はキャンセル操作を経由しないため、ここでフラグを立てて
+                    // バックグラウンドのループを速やかに畳ませる
+                    scan_state.cancel_flag.store(true, Ordering::Relaxed);
+                    logger::log_error(
+                        "[App Exit] Exit requested while a scan was still running. The scan was cancelled; \
+                         media left in 'pending' will be analyzed on the next scan.",
+                    );
+                } else {
+                    logger::log_info("[App Exit] Exit requested.");
+                }
+            }
+            tauri::RunEvent::Exit => {
+                logger::log_info("===== Loma exited =====");
+            }
+            _ => {}
+        });
 }
 

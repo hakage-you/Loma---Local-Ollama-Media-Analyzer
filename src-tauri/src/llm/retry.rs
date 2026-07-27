@@ -45,6 +45,12 @@ impl RetryingLlmProvider {
             || err_msg.contains("RESOURCE_EXHAUSTED")
     }
 
+    /// コンテキスト枯渇はリトライしても同じ結果になるため、一時障害として扱わない。
+    /// （OllamaProvider 側で num_ctx を拡張して再試行済み）
+    fn is_context_exhausted(err_msg: &str) -> bool {
+        err_msg.contains("Ollama context exhausted")
+    }
+
     fn is_transient_server_error(err_msg: &str) -> bool {
         err_msg.contains("503")
             || err_msg.contains("500")
@@ -108,6 +114,10 @@ impl RetryingLlmProvider {
             if let Ok(lock) = self.context.lock() {
                 if let Some(ref ctx) = *lock {
                     if ctx.cancel_flag.load(Ordering::Relaxed) {
+                        crate::logger::log_info(&format!(
+                            "[Scan Cancelled] Cancelled during the '{}' wait (attempt {}/{}, {}s of the backoff remaining).",
+                            reason_label, attempt, max_att, remaining
+                        ));
                         return Err(anyhow!("Scan cancelled during API retry wait"));
                     }
                 }
@@ -186,7 +196,16 @@ impl LlmProvider for RetryingLlmProvider {
                 Ok(res) => return Ok(res),
                 Err(err) => {
                     let err_msg = err.to_string();
-                    
+
+                    if Self::is_context_exhausted(&err_msg) {
+                        // 同一条件での再試行は無意味なため、即座に失敗として扱う
+                        crate::logger::log_error(&format!(
+                            "[Retry Aborted] Context exhausted - retrying would not help: {}",
+                            err_msg
+                        ));
+                        return Err(err);
+                    }
+
                     if Self::is_rate_limit(&err_msg) && attempt < self.max_attempts {
                         let wait_time = self.calculate_long_backoff_sec(attempt);
                         let duration_desc = Self::format_duration_desc(wait_time);
@@ -205,16 +224,17 @@ impl LlmProvider for RetryingLlmProvider {
                         if wait_time > 0 {
                             let duration_desc = Self::format_duration_desc(wait_time);
                             let log_msg = format!(
-                                "[API Transient Error Recovery] Model or server temporarily unresponsive (Attempt {}/{}). Retrying in {}...",
-                                attempt, transient_max_attempts, duration_desc
+                                "[API Transient Error Recovery] Model or server temporarily unresponsive (Attempt {}/{}). Retrying in {}... Cause: {}",
+                                attempt, transient_max_attempts, duration_desc, err_msg
                             );
                             crate::logger::log_info(&log_msg);
                             eprintln!("{}", log_msg);
                             self.sleep_and_emit_countdown(wait_time, "API Retry Wait", attempt, transient_max_attempts).await?;
                         } else {
+                            // 原因究明のため、リトライを誘発した実際のエラー内容を必ず残す
                             let log_msg = format!(
-                                "[Ollama Instant Retry] Model temporarily unresponsive (Attempt {}/{}). Retrying immediately...",
-                                attempt, transient_max_attempts
+                                "[Ollama Instant Retry] Model temporarily unresponsive (Attempt {}/{}). Retrying immediately... Cause: {}",
+                                attempt, transient_max_attempts, err_msg
                             );
                             crate::logger::log_info(&log_msg);
                         }
@@ -235,7 +255,16 @@ impl LlmProvider for RetryingLlmProvider {
                 Ok(res) => return Ok(res),
                 Err(err) => {
                     let err_msg = err.to_string();
-                    
+
+                    if Self::is_context_exhausted(&err_msg) {
+                        // 同一条件での再試行は無意味なため、即座に失敗として扱う
+                        crate::logger::log_error(&format!(
+                            "[Retry Aborted] Context exhausted - retrying would not help: {}",
+                            err_msg
+                        ));
+                        return Err(err);
+                    }
+
                     if Self::is_rate_limit(&err_msg) && attempt < self.max_attempts {
                         let wait_time = self.calculate_long_backoff_sec(attempt);
                         let duration_desc = Self::format_duration_desc(wait_time);
@@ -254,16 +283,16 @@ impl LlmProvider for RetryingLlmProvider {
                         if wait_time > 0 {
                             let duration_desc = Self::format_duration_desc(wait_time);
                             let log_msg = format!(
-                                "[API Transient Error Recovery] Multi-frame Model or server temporarily unresponsive (Attempt {}/{}). Retrying in {}...",
-                                attempt, transient_max_attempts, duration_desc
+                                "[API Transient Error Recovery] Multi-frame Model or server temporarily unresponsive (Attempt {}/{}). Retrying in {}... Cause: {}",
+                                attempt, transient_max_attempts, duration_desc, err_msg
                             );
                             crate::logger::log_info(&log_msg);
                             eprintln!("{}", log_msg);
                             self.sleep_and_emit_countdown(wait_time, "API Retry Wait", attempt, transient_max_attempts).await?;
                         } else {
                             let log_msg = format!(
-                                "[Ollama Instant Retry] Multi-frame Model temporarily unresponsive (Attempt {}/{}). Retrying immediately...",
-                                attempt, transient_max_attempts
+                                "[Ollama Instant Retry] Multi-frame Model temporarily unresponsive (Attempt {}/{}). Retrying immediately... Cause: {}",
+                                attempt, transient_max_attempts, err_msg
                             );
                             crate::logger::log_info(&log_msg);
                         }

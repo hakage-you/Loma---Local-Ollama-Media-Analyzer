@@ -1,10 +1,6 @@
 [package]
 name = "loma"
-<<<<<<< HEAD
 version = "0.4.0"
-=======
-version = "0.3.0"
->>>>>>> 32cce9c (chore: bump version to v0.3.0)
 description = "A Tauri App"
 authors = ["you"]
 edition = "2026"

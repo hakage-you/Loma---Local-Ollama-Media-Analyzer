@@ -1,17 +1,13 @@
 # Loma (Local Ollama Media Analyzer)
 
-Loma は、ローカル VLM (Ollama `llava`, `qwen3-vl`, `llama3.2-vision` 等の画像解析用大規模言語モデル) を用いて、PC内の画像・動画メディアを自動的に解析・自動タグ付け・カテゴリ分類・高速検索できるデスクトップアプリケーションです。
+Loma は、ローカル VLM (画像解析用大規模言語モデル) を用いて、PC内の画像・動画メディアを自動的に解析・自動タグ付け・カテゴリ分類・高速検索できるデスクトップアプリケーションです。
 
 大切な写真などのプライバシー保護のため、3Dゲームが動かせる程度のスペックのPCがあればAIの学習などに利用されずに分析・分類ができるように作りました。<br>
 (非サポートですが、API keyを設定することでクラウドのVLMを利用した解析も可能です。)
 
-※設計、仕様検討、レビュー、動作確認だけは頑張ってますが、コードを書く部分についてはすべて生成AIに作ってもらってます。
+※コードを書く部分についてはすべて生成AIにやってもらってます。
 
 ---
-
-## 注意
-
-現在readme.mdはメンテ中なので、細かい部分や説明が間違っている可能性があります。
 
 ## 免責
 
@@ -49,7 +45,7 @@ Loma は、ローカル VLM (Ollama `llava`, `qwen3-vl`, `llama3.2-vision` 等�
 
    `qwen3-vl` `gemma4` などの vision対応モデルをOllamaに追加する。 コマンド例: `ollama run qwen3-vl` 
    
-   **ここに書かれている意味がわからない場合はオススメLVMをインストールする機能があるためこの手順は無視してください。**
+   **ここに書かれている意味がわからない場合はオススメVLMをインストールする機能があるためこの手順は無視してください。**
 
 ### 2.2. (Option) FFmpegのインストールとセットアップ
 
@@ -75,7 +71,7 @@ Loma の基本的な使い方は次の3ステップです。
 
 アプリのビルドおよび動作には以下のツールが必要です。
 
-1. **[Node.js](https://nodejs.org/)**: v18 以上推奨
+1. **[Node.js](https://nodejs.org/)**: v20.19 以上（v22.12 以上推奨）
 2. **[Rust](https://www.rust-lang.org/)**: Cargo 1.75 以上推奨
 3. **[Ollama](https://ollama.com/)**:
    - ローカル環境で Ollama サービスが起動していること (`http://localhost:11434`)。
@@ -114,16 +110,16 @@ npm run build
 cd src-tauri
 cargo check
 cargo test
+
+# UI テスト (Playwright / 初回のみ npx playwright install chromium)
+npm run test:e2e
 ```
 
 ---
 
 ## 5. その他
 
-- **アプリケーションバージョン**: `0.2.1`
+- **アプリケーションバージョン**: `0.4.0`
 - **作成者**: `@hakageyou`
-- **公式リンク**:
-  - **X (旧Twitter)**: [https://x.com/hakage_you](https://x.com/hakage_you)
-  - **GitHub Repository**: [https://github.com/hakage-you/Loma---Local-Ollama-Media-Analyzer](https://github.com/hakage-you/Loma---Local-Ollama-Media-Analyzer)
 - **ライセンス**: MIT License
 - **コピーライト**: © 2026 @hakageyou

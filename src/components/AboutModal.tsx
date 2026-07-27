@@ -44,7 +44,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
             <h2 className="text-xl font-bold text-white tracking-wide">Loma</h2>
             <p className="text-xs text-indigo-300 font-medium">Local Ollama Media Analyzer</p>
             <div className="inline-block px-2.5 py-0.5 bg-indigo-600/30 text-indigo-200 border border-indigo-500/40 rounded-full text-[11px] font-mono font-semibold mt-1">
-              v0.2.1
+              v{__APP_VERSION__}
             </div>
           </div>
         </div>

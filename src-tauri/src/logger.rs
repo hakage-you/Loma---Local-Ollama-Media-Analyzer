@@ -2,6 +2,7 @@ use chrono::Local;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::AppHandle;
 use tauri::Manager;
@@ -11,6 +12,30 @@ pub struct Logger {
 }
 
 static LOGGER_INSTANCE: Mutex<Option<Logger>> = Mutex::new(None);
+
+/// LLM 詳細デバッグログの有効フラグ。
+/// 設定 `llm_debug_logging` もしくは環境変数 `LOMA_DEBUG_LLM=1` で有効化される。
+static LLM_DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// 設定値に基づいて LLM デバッグログの ON/OFF を切り替える。
+/// 環境変数 `LOMA_DEBUG_LLM=1` が設定されている場合は設定値によらず常に有効。
+pub fn set_llm_debug_enabled(enabled: bool) {
+    let forced = std::env::var("LOMA_DEBUG_LLM")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    LLM_DEBUG_ENABLED.store(enabled || forced, Ordering::Relaxed);
+}
+
+pub fn is_llm_debug_enabled() -> bool {
+    LLM_DEBUG_ENABLED.load(Ordering::Relaxed)
+}
+
+/// LLM デバッグログ出力（有効時のみログファイルに書き込まれる）
+pub fn log_debug(message: &str) {
+    if is_llm_debug_enabled() {
+        write_log("DEBUG", message);
+    }
+}
 
 pub fn init_logger(app_handle: &AppHandle) {
     let app_dir = app_handle

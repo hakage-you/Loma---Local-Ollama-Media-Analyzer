@@ -325,6 +325,12 @@ pub async fn pull_ollama_model(app_handle: AppHandle, base_url: &str, model_name
     while let Ok(Some(chunk)) = res.chunk().await {
         if PULL_CANCELLED.load(Ordering::SeqCst) {
             PULL_CANCELLED.store(false, Ordering::SeqCst);
+            crate::logger::log_info(&format!(
+                "[Download Cancelled] Model pull '{}' cancelled by user at {} / {} MB.",
+                model_name,
+                last_completed / (1024 * 1024),
+                last_total / (1024 * 1024)
+            ));
             let _ = app_handle.emit("ollama-pull-progress", OllamaPullProgressPayload {
                 model: model_name.to_string(),
                 status: "Cancelled by user".to_string(),
@@ -786,6 +792,10 @@ pub async fn run_scan_and_batch(
 
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = unload_ollama_model(&ollama_url, &ollama_model).await;
+                crate::logger::log_info(&format!(
+                    "[Scan Cancelled] Cancelled while paused at {}/{} ({} analyzed this run). Model '{}' unloaded from VRAM.",
+                    pending_idx, total_pending, processed_count, ollama_model
+                ));
                 return Ok(());
             }
 
@@ -805,6 +815,14 @@ pub async fn run_scan_and_batch(
 
         if cancel_flag.load(Ordering::Relaxed) {
             let _ = unload_ollama_model(&ollama_url, &ollama_model).await;
+            crate::logger::log_info(&format!(
+                "[Scan Cancelled] Stopped before analyzing {}/{} '{}' ({} analyzed this run). Model '{}' unloaded from VRAM.",
+                pending_idx + 1,
+                total_pending,
+                Path::new(&file_path_str).file_name().and_then(|n| n.to_str()).unwrap_or(&file_path_str),
+                processed_count,
+                ollama_model
+            ));
             return Ok(());
         }
 
@@ -1056,7 +1074,10 @@ pub async fn run_scan_and_batch(
 
     if cancel_flag.load(Ordering::Relaxed) {
         let _ = unload_ollama_model(&ollama_url, &ollama_model).await;
-        crate::logger::log_info("Batch process cancelled. Exiting clean.");
+        crate::logger::log_info(&format!(
+            "[Scan Cancelled] Batch process cancelled after the analysis loop ({}/{} analyzed). Exiting clean.",
+            processed_count, total_pending
+        ));
         return Ok(());
     }
 

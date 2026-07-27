@@ -7,6 +7,13 @@ import fs from "node:fs";
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+// アプリのバージョンは package.json を単一の情報源とする。
+// 以前は About ダイアログに直接書かれており、バージョン更新時に追従し忘れて
+// 実際のバージョンとずれていた（v0.3.0 リリース時に v0.2.1 のまま残っていた）。
+const appVersion = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, "package.json"), "utf-8")
+).version as string;
+
 // `npm run dev:mock` (--mode mock) の時だけ有効化する、ドキュメント用スクリーンショット撮影向けの
 // 静的サムネイル配信プラグイン。test_assets/mock/ 配下のファイルを /mock-assets/<filename> で返す。
 function mockAssetsPlugin(): Plugin {
@@ -31,6 +38,10 @@ function mockAssetsPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => ({
   plugins: [react(), tailwindcss(), ...(mode === "mock" ? [mockAssetsPlugin()] : [])],
+
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
 
   resolve: {
     alias:
