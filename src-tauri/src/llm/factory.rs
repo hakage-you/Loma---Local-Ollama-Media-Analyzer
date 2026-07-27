@@ -56,6 +56,13 @@ pub async fn create_llm_provider_with_prompt_override(
         .unwrap_or_else(|| "2".to_string());
     let retry_delay_sec: u64 = retry_delay_str.parse().unwrap_or(2);
 
+    // LLM詳細デバッグログ（プロンプト種別・num_ctx・トークン消費量・生レスポンス）の有効化
+    let debug_logging_str: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'llm_debug_logging'")
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_else(|| "false".to_string());
+    crate::logger::set_llm_debug_enabled(debug_logging_str == "true");
+
     let prompt_config = match prompt_override {
         Some(cfg) => cfg,
         None => {
@@ -113,7 +120,21 @@ pub async fn create_llm_provider_with_prompt_override(
                 .fetch_optional(pool)
                 .await?
                 .unwrap_or_else(|| "llava".to_string());
-            Arc::new(OllamaProvider::new(url, model, prompt_config))
+
+            // 0 (auto) の場合はプロンプト種別・粒度から自動決定する
+            let num_ctx: usize = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'ollama_num_ctx'")
+                .fetch_optional(pool)
+                .await?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+
+            let max_image_edge: u32 = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'ollama_max_image_edge'")
+                .fetch_optional(pool)
+                .await?
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1536);
+
+            Arc::new(OllamaProvider::new(url, model, prompt_config, num_ctx, max_image_edge))
         }
     };
 
@@ -125,7 +146,14 @@ pub async fn create_llm_provider_with_prompt_override(
     };
 
     let (prompt_style, _) = super::get_vlm_prompt_info(final_provider.name(), final_provider.model_name(), &prompt_config);
-    crate::logger::log_info(&format!("[LLM Provider] Initialized '{}' (model: '{}') using prompt style: {}", final_provider.name(), final_provider.model_name(), prompt_style.name()));
+    crate::logger::log_info(&format!(
+        "[LLM Provider] Initialized '{}' (model: '{}') using prompt style: {} / tag granularity: {} / debug logging: {}",
+        final_provider.name(),
+        final_provider.model_name(),
+        prompt_style.name(),
+        prompt_config.granularity.as_setting_str(),
+        if crate::logger::is_llm_debug_enabled() { "ON" } else { "OFF" },
+    ));
 
     let config = LlmFactoryConfig {
         provider: provider_name,

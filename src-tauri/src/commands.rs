@@ -13,6 +13,25 @@ pub struct ScanState {
     pub is_running: Arc<AtomicBool>,
 }
 
+/// バックグラウンドスキャンを実行し、その終了理由をログに残す。
+///
+/// 各コマンドは `let _ = run_scan_and_batch(...)` でエラーを握り潰しており、
+/// 連続エラーによる中断やDBエラーで終了しても何も記録されていなかった。
+async fn run_scan_and_log_outcome(
+    label: &str,
+    target_folders: Vec<std::path::PathBuf>,
+    pool: sqlx::Pool<sqlx::Sqlite>,
+    app_handle: AppHandle,
+    cancel_flag: Arc<AtomicBool>,
+    pause_flag: Arc<AtomicBool>,
+) {
+    crate::logger::log_info(&format!("[Scan Started] {}", label));
+    match run_scan_and_batch(target_folders, pool, app_handle, cancel_flag, pause_flag).await {
+        Ok(()) => crate::logger::log_info(&format!("[Scan Finished] {} ended normally.", label)),
+        Err(e) => crate::logger::log_error(&format!("[Scan Aborted] {} terminated with an error: {}", label, e)),
+    }
+}
+
 pub struct TaskGuard(pub Arc<AtomicBool>);
 
 impl Drop for TaskGuard {
@@ -351,7 +370,7 @@ pub async fn start_scan(
 
     tokio::spawn(async move {
         let _guard = task_guard;
-        let _ = run_scan_and_batch(vec![path], pool, app_handle, cancel_flag, pause_flag).await;
+        run_scan_and_log_outcome("start_scan", vec![path], pool, app_handle, cancel_flag, pause_flag).await;
     });
 
     Ok(())
@@ -359,12 +378,27 @@ pub async fn start_scan(
 
 #[tauri::command]
 pub async fn cancel_scan(scan_state: State<'_, ScanState>) -> Result<(), String> {
+    let was_running = scan_state.is_running.load(Ordering::Relaxed);
+    crate::logger::log_info(&format!(
+        "[User Action] Scan cancellation requested (scan running: {}). Waiting for the background task to stop...",
+        was_running
+    ));
+
     scan_state.cancel_flag.store(true, Ordering::Relaxed);
     scan_state.pause_flag.store(false, Ordering::Relaxed);
 
     // バックグラウンドタスクが完全に停止して TaskGuard (is_running) が解放されるまで確実に待機
+    let started = std::time::Instant::now();
     while scan_state.is_running.load(Ordering::Relaxed) {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    if was_running {
+        // 解析中のリクエストが完了するまで待つため、停止までに時間がかかることがある
+        crate::logger::log_info(&format!(
+            "[User Action] Scan stopped and resources released ({:.1}s after the cancellation request).",
+            started.elapsed().as_secs_f64()
+        ));
     }
 
     Ok(())
@@ -372,12 +406,14 @@ pub async fn cancel_scan(scan_state: State<'_, ScanState>) -> Result<(), String>
 
 #[tauri::command]
 pub async fn pause_scan(scan_state: State<'_, ScanState>) -> Result<(), String> {
+    crate::logger::log_info("[User Action] Scan pause requested.");
     scan_state.pause_flag.store(true, Ordering::Relaxed);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn resume_scan(scan_state: State<'_, ScanState>) -> Result<(), String> {
+    crate::logger::log_info("[User Action] Scan resume requested.");
     scan_state.pause_flag.store(false, Ordering::Relaxed);
     Ok(())
 }
@@ -839,7 +875,7 @@ pub async fn retry_media(
 
     tokio::spawn(async move {
         let _guard = task_guard;
-        let _ = run_scan_and_batch(folder_paths, pool, app_handle, cancel_flag, pause_flag).await;
+        run_scan_and_log_outcome("retry_media", folder_paths, pool, app_handle, cancel_flag, pause_flag).await;
     });
 
     Ok(())
@@ -921,7 +957,7 @@ pub async fn rescan_all_folders(
 
     tokio::spawn(async move {
         let _guard = task_guard;
-        let _ = run_scan_and_batch(folder_paths, pool, app_handle, cancel_flag, pause_flag).await;
+        run_scan_and_log_outcome("rescan_all_folders", folder_paths, pool, app_handle, cancel_flag, pause_flag).await;
     });
 
     Ok(())
@@ -963,7 +999,7 @@ pub async fn reanalyze_all_media(
 
     tokio::spawn(async move {
         let _guard = task_guard;
-        let _ = run_scan_and_batch(folder_paths, pool, app_handle, cancel_flag, pause_flag).await;
+        run_scan_and_log_outcome("reanalyze_all_media", folder_paths, pool, app_handle, cancel_flag, pause_flag).await;
     });
 
     Ok(())
@@ -1008,7 +1044,7 @@ pub async fn reanalyze_folder(
         let _guard = task_guard;
         let path = std::path::PathBuf::from(&folder_path);
         if path.exists() {
-            let _ = run_scan_and_batch(vec![path], pool, app_handle, cancel_flag, pause_flag).await;
+            run_scan_and_log_outcome("reanalyze_folder", vec![path], pool, app_handle, cancel_flag, pause_flag).await;
         }
     });
 
@@ -1744,7 +1780,9 @@ pub async fn sync_folders(
     let pause_flag = scan_state.pause_flag.clone();
 
     tokio::spawn(async move {
-        let _ = crate::batch::run_sync_folders(&app_handle, &pool, cancel_flag, pause_flag).await;
+        if let Err(e) = crate::batch::run_sync_folders(&app_handle, &pool, cancel_flag, pause_flag).await {
+            crate::logger::log_error(&format!("[Sync Aborted] Folder sync terminated with an error: {}", e));
+        }
     });
 
     Ok(())
