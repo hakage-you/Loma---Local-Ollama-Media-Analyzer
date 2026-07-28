@@ -78,7 +78,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
             </button>
 
             <button
-              onClick={() => handleOpenLink('https://github.com/hakage-you/Loma---Local-Ollama-Media-Analyzer')}
+              onClick={() => handleOpenLink('https://github.com/hakage-you/loma')}
               className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-xl border border-white/10 text-xs font-medium transition cursor-pointer"
             >
               <Github className="w-3.5 h-3.5 text-purple-400" />
