@@ -114,3 +114,9 @@ cargo test
 # UI テスト (Playwright / 初回のみ npx playwright install chromium)
 npm run test:e2e
 ```
+
+### 4.3 リリース手順
+
+バージョン更新からタグ作成、配布用 ZIP の同梱物、`gh` でのリリース作成までの標準手順は
+[リリース手順](docs/release.md) にまとめてあります。配布物には MIT の条件として
+`LICENSE` を必ず同梱します。過去のリリースノートは [`docs/release-notes/`](docs/release-notes/) にあります。
