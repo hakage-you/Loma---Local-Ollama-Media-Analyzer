@@ -2,7 +2,8 @@
 name = "loma"
 version = "0.4.0"
 description = "A Tauri App"
-authors = ["you"]
+authors = ["hakage-you"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

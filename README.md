@@ -114,12 +114,3 @@ cargo test
 # UI テスト (Playwright / 初回のみ npx playwright install chromium)
 npm run test:e2e
 ```
-
----
-
-## 5. その他
-
-- **アプリケーションバージョン**: `0.4.0`
-- **作成者**: `@hakageyou`
-- **ライセンス**: MIT License
-- **コピーライト**: © 2026 @hakageyou
