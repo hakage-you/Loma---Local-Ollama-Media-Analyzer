@@ -11,20 +11,26 @@
 
 ## 1. バージョンを更新する
 
-**3 箇所すべてを揃える。** どれか 1 つでも古いままだと、インストーラのファイル名・
-アプリ内のバージョン表示・crate のバージョンが食い違う。
+**`package.json` の `version` が正本。** 通常はここだけ書き換える。
 
-| ファイル | 箇所 |
+| ファイル | 役割 |
 | --- | --- |
-| `package.json` | `"version": "X.Y.Z"` |
-| `src-tauri/tauri.conf.json` | `"version": "X.Y.Z"` |
-| `src-tauri/Cargo.toml` | `version = "X.Y.Z"` |
+| `package.json` | **正本。** ここだけを更新する |
+| `src-tauri/tauri.conf.json` | `"version": "../package.json"` を指定してあり、`package.json` から継承する |
+| `src-tauri/Cargo.toml` | crate のバージョン。Cargo が必須とするため残っているが、配布物にも UI にも出ない |
 
-`package-lock.json` と `Cargo.lock` は次のビルドで自動更新されるので手で触らない。
+`package.json` が正本なのは、UI 側もそこから読んでいるため。`vite.config.ts` が
+ビルド時に `package.json` の `version` を `__APP_VERSION__` へ埋め込み、`AboutModal.tsx` が
+それを表示している。ここを分けると、**インストーラのファイル名と About ダイアログの表示が
+食い違う**ことになる。
 
-> **重複を減らしたい場合**: `tauri.conf.json` の `version` は、削除すると `Cargo.toml` の値を、
-> `"../package.json"` を指定すると `package.json` の値を継承する（Tauri の設定スキーマに記載）。
-> どちらかにすれば管理箇所を 2 つに減らせる。現状は 3 箇所に明示している。
+`src-tauri/Cargo.toml` の `version` は上記の 2 つとは独立しているが、外から見える箇所には
+出てこない。気になるなら揃えてよい。`package-lock.json` と `Cargo.lock` は次のビルドで
+自動更新されるので手で触らない。
+
+> **注意**: `src/locales/*.json` にかつて `app.version` というキーがあり、ハードコードされた
+> バージョンが 2 リリース分古いまま放置されていた。どこからも参照されていなかったため削除済み。
+> **バージョン番号をロケールファイルに書かないこと。**
 
 ## 2. テストと型チェック
 
