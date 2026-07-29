@@ -18,6 +18,16 @@ struct OllamaGenerateOptions {
     num_ctx: usize,
 }
 
+/// Ollama /api/generate のリクエスト。
+///
+/// **`format: "json"` フィールドを追加してはならない。**
+/// thinking 対応モデル（既定の qwen3-vl 系はすべて該当）に指定すると応答が空文字になる。
+/// 画像の有無に関わらず再現し、非 thinking モデルでは再現しないため、原因は
+/// プロンプトでも画像でもなく thinking 対応の有無である（2026-07-29 実測）。
+/// しかも `done_reason` は "length" ではなく "stop"（正常終了）で返るため、
+/// `analyze_with_ctx_escalation` の再試行ガードをすり抜けて静かに失敗する。
+/// JSON の抽出は `parse_analysis_result` が担うので format 指定は不要。
+/// 検証方法: tools/prompt-check/README.md
 #[derive(Serialize)]
 struct OllamaGenerateRequest {
     model: String,

@@ -1,0 +1,111 @@
+# VLM プロンプト回帰チェック
+
+VLM 解析プロンプトを改修したときに、**改修前後を同じ画像で流して品質の変化を計測する**開発用ツール。
+
+Ollama とローカルの VLM モデルが必要なため **CI では回せない**。開発 PC で手動実行する。
+
+## なぜ必要か
+
+`VLM_ANALYSIS_PROMPT_LIGHT` は「軽量・小型モデル向けの高速・**安定化**プロンプト」であり、
+**極小であること自体が設計意図**。指示を1行足すだけで小型モデルの出力が不安定化しうる。
+
+そのため「タグが増えたか」だけを見て採用してはいけない。**3つを別軸で同時に見る**:
+
+| 軸 | 見落とすと何が起きるか |
+|---|---|
+| **タグ本数の分布** | タグ数不足でメディアが機能から除外される |
+| **JSON パース失敗率** | 解析が丸ごと失敗する |
+| **空文字応答率** | `format:"json"` の可否がここに出る（後述） |
+
+## `format:"json"` について
+
+**Ollama の `format: "json"` は thinking 対応モデルの出力を破壊する。** 2026-07-29 に本ツールで実測確認済み。
+
+| モデル | thinking | 画像 | `format:"json"` | 結果 |
+|---|---|---|---|---|
+| qwen3-vl:4b | YES | あり | 無 | 正常 |
+| qwen3-vl:4b | YES | あり | 有 | **空応答（57/57）** |
+| qwen3-vl:4b | YES | なし | 有 | **空応答** |
+| qwen2:1.5b | NO | なし | 有 | 正常 |
+
+画像を外しても再現し、非 thinking モデルでは再現しない。**要因はプロンプトでも画像でもなく
+thinking 対応の有無。** VLM では空文字、テキストモデルでは `{}` という縮退値が返る。
+
+**特に危険な点:** `done_reason` が `"length"` ではなく **`"stop"`（正常終了）** で返るため、
+`ollama.rs` の `analyze_with_ctx_escalation` にある再試行ガードが**発動しない**。静かに抜ける。
+
+Loma の既定モデル（`qwen3-vl:*`, `gemma4:*`, `qwen3:14b`）はいずれも thinking 対応。
+モデルの対応状況は `/api/tags` の `capabilities` に `"thinking"` が含まれるかで判定できる。
+
+将来 Ollama 側で改善される可能性はあるので、`--format-json both` で**推測ではなく実測で**再確認すること。
+
+## プロンプトの取得方法
+
+プロンプト本文は**このディレクトリにコピーしていない**。`prompts.mjs` が
+`src-tauri/src/llm/mod.rs` から**実物を抽出**する。コピーを持つと必ず乖離し、
+「テストは通るが本番と違うものを測っていた」という最悪の失敗をするため。
+
+`num_ctx` も `recommended_num_ctx()` から抽出する。
+
+> **注意**: `mod.rs` は CRLF で保存されているが、**Rust は文字列リテラル（生文字列リテラルを含む）内の
+> CRLF を LF に正規化する**。`prompts.mjs` は同じ正規化を行う。ここを忘れると本番と1バイト単位で
+> 異なるプロンプトを測ることになる。
+
+`descriptive_rules_section` だけは `format!` マクロのため生文字列として抽出できず、
+JS 側にミラーを置いている。Rust 側の変更を検知できるよう、結果 JSON に関数のハッシュを記録する。
+
+## 使い方
+
+```bash
+# 既定: 現行 LIGHT と「Output 3 to 5 tags」案を比較
+node tools/prompt-check/run.mjs
+
+# 試行回数と画像を増やして精度を上げる
+node tools/prompt-check/run.mjs --variants light,light_count,light_count_schema --repeat 3 --sample 12
+
+# format:"json" の on/off を比較する
+node tools/prompt-check/run.mjs --variants light_count --format-json both
+
+# DETAILED 側の粒度を比較する
+node tools/prompt-check/run.mjs --variants detailed_atomic,detailed_balanced,detailed_descriptive --model qwen3-vl:30b
+```
+
+### オプション
+
+| オプション | 既定 | 説明 |
+|---|---|---|
+| `--model` | `qwen3-vl:4b` | 使用する VLM |
+| `--url` | `http://localhost:11434` | Ollama のエンドポイント |
+| `--variants` | `light,light_count` | 比較するプロンプト（カンマ区切り） |
+| `--format-json` | `off` | `off` / `on` / `both` |
+| `--repeat` | `1` | 同一画像あたりの試行回数 |
+| `--sample` | `5` | `test_assets/100files` から拾う枚数 |
+| `--limit` | `0` | 画像総数の上限（動作確認用） |
+
+### プロンプト variant
+
+| 名前 | 内容 |
+|---|---|
+| `light` | mod.rs の実物 |
+| `detailed_atomic` / `detailed_balanced` / `detailed_descriptive` | mod.rs の実物（粒度別） |
+| `light_count` | **候補**: LIGHT + `Output 3 to 5 tags.` |
+| `light_count_schema` | **候補**: LIGHT + 本数指示 + en/ja 必須 |
+
+候補は `prompts.mjs` の `candidateVariants()` に定義する。
+**採用して Rust に取り込んだら、対応する候補エントリは削除すること**（本物と候補の二重管理を避ける）。
+
+## 検証用画像
+
+- `test_assets/3files`, `test_assets/100files` から拾う（等間隔サンプリングなので実行間で比較可能）
+- **低情報量画像（単色・白地に点・グラデーション・空白UI風）を自動生成して必ず混ぜる。**
+  タグ本数の下限は実写だけを測っても観測できないため
+
+`test_assets/` は `.gitignore` されており各自の環境で中身が違う。存在する画像だけを拾う。
+
+## 判定の目安
+
+- タグ本数が改善しても、**パース失敗率・空文字応答率が改修前より悪化していれば採用しない**
+- パース判定は `AnalysisResult` と同じ厳格さ（`categories`/`tags` 必須、各タグに `en`/`ja` 必須。
+  `"tags": ["cat"]` のような文字列配列は構文が正しくても失敗扱い）
+
+結果は `results/` に JSON で保存される（gitignore 済み）。
