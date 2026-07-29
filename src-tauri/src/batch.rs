@@ -21,6 +21,21 @@ struct FileScanMeta {
     thumb_path_str: String,
 }
 
+/// キャンセルフラグが立つまで待ち続ける。
+///
+/// VLM の1リクエストは数十秒〜数分かかるため、フラグを「リクエストの合間」でしか
+/// 見ないとキャンセルの体感速度がそのまま推論時間に引きずられる。
+/// `tokio::select!` の片側にこれを置いて解析 Future を drop することで、
+/// HTTP 接続が切断され Ollama 側の生成も即座に打ち切られる。
+pub async fn wait_until_cancelled(cancel_flag: &Arc<AtomicBool>) {
+    loop {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ProgressPayload {
     pub total: usize,
@@ -250,7 +265,12 @@ pub async fn load_prompt_config(pool: &Pool<Sqlite>) -> crate::llm::PromptConfig
 }
 
 pub async fn unload_ollama_model(base_url: &str, model_name: &str) -> Result<()> {
-    let client = Client::new();
+    // アンロードはキャンセル完了直前にも呼ばれるため、Ollama が応答しない場合でも
+    // 待ち続けないようタイムアウトを設ける（未実行でも keep_alive 満了で解放される）
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let body = serde_json::json!({
         "model": model_name,
         "keep_alive": 0
@@ -708,6 +728,12 @@ pub async fn run_scan_and_batch(
     }
     tx.commit().await?;
 
+    // スキャン段階でキャンセルされた場合は、VLM プロバイダーの初期化まで進めず即座に終了する
+    if cancel_flag.load(Ordering::Relaxed) {
+        crate::logger::log_info("[Scan Cancelled] Cancelled during the file registration phase. Exiting before VLM initialization.");
+        return Ok(());
+    }
+
     // 2. LLM プロバイダーの初期化
     let (llm_provider, factory_config) = crate::llm::factory::create_llm_provider(&pool).await?;
 
@@ -930,7 +956,22 @@ pub async fn run_scan_and_batch(
             continue;
         };
 
-        match llm_provider.analyze_image(target_img_path).await {
+        // 解析中のキャンセルは Future の drop で HTTP 接続ごと打ち切る（推論完了を待たない）
+        let analysis = tokio::select! {
+            biased;
+            _ = wait_until_cancelled(&cancel_flag) => None,
+            res = llm_provider.analyze_image(target_img_path) => Some(res),
+        };
+
+        let Some(analysis) = analysis else {
+            crate::logger::log_info(&format!(
+                "[Scan Cancelled] Aborted the in-flight analysis request for '{}' ({}/{}).",
+                file_name_short, pending_idx + 1, total_pending
+            ));
+            break;
+        };
+
+        match analysis {
             Ok(result) => {
                 consecutive_errors = 0;
                 processed_count += 1;
@@ -1231,17 +1272,21 @@ pub async fn custom_analyze_video_media(
 
     // 3. Ollama へマルチ画像 VLM 解析リクエスト送信
     let client = Client::new();
-    let res = analyze_multi_frame_with_ollama(
-        &client,
-        &ollama_url,
-        &ollama_model,
-        &main_frame_path,
-        if pre_ok { Some(&pre_frame_path) } else { None },
-        if post_ok { Some(&post_frame_path) } else { None },
-        cancel_flag.clone(),
-        &prompt_config,
-    )
-    .await;
+    // バッチ解析と同様、キャンセル時は生成完了を待たずリクエストを打ち切る
+    let res = tokio::select! {
+        biased;
+        _ = wait_until_cancelled(&cancel_flag) => Err(anyhow!("Task canceled by user during the analysis request")),
+        r = analyze_multi_frame_with_ollama(
+            &client,
+            &ollama_url,
+            &ollama_model,
+            &main_frame_path,
+            if pre_ok { Some(&pre_frame_path) } else { None },
+            if post_ok { Some(&post_frame_path) } else { None },
+            cancel_flag.clone(),
+            &prompt_config,
+        ) => r,
+    };
 
     // 必ず VRAM を即時解放
     let _ = unload_ollama_model(&ollama_url, &ollama_model).await;
@@ -1866,3 +1911,50 @@ async fn cleanup_and_detect_moves(
 
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// 解析中のキャンセルが「推論の完了待ち」に引きずられないことの回帰テスト。
+    /// 長時間かかる解析 Future を select! の負け側として drop できることを確認する。
+    #[tokio::test]
+    async fn cancellation_aborts_a_long_running_analysis() {
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
+        let flag = cancel_flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            flag.store(true, Ordering::Relaxed);
+        });
+
+        let started = Instant::now();
+        let result: Option<()> = tokio::select! {
+            biased;
+            _ = wait_until_cancelled(&cancel_flag) => None,
+            _ = tokio::time::sleep(Duration::from_secs(30)) => Some(()),
+        };
+
+        assert!(result.is_none(), "cancellation must win over the pending analysis");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "cancellation took {:?}; it must not wait for the analysis to finish",
+            started.elapsed()
+        );
+    }
+
+    /// キャンセルされていない間は待ち続け、解析側の完了を横取りしないこと。
+    #[tokio::test]
+    async fn a_completed_analysis_wins_when_not_cancelled() {
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
+        let result: Option<&str> = tokio::select! {
+            biased;
+            _ = wait_until_cancelled(&cancel_flag) => None,
+            _ = tokio::time::sleep(Duration::from_millis(50)) => Some("analyzed"),
+        };
+
+        assert_eq!(result, Some("analyzed"));
+    }
+}
