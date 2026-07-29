@@ -120,3 +120,9 @@ npm run test:e2e
 バージョン更新からタグ作成、配布用 ZIP の同梱物、`gh` でのリリース作成までの標準手順は
 [リリース手順](docs/release.md) にまとめてあります。配布物には MIT の条件として
 `LICENSE` を必ず同梱します。過去のリリースノートは [`docs/release-notes/`](docs/release-notes/) にあります。
+
+### 4.4 VLM 連携の知見
+
+VLM 連携で踏んだ落とし穴と実測データは [VLM 連携の知見](docs/vlm-notes.md) にまとめてあります。
+解析プロンプトを変更する場合は、事前に目を通したうえで
+[`tools/prompt-check/`](tools/prompt-check/README.md) の回帰チェックを回してください。
