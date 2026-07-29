@@ -1524,11 +1524,16 @@ pub async fn run_suggest_tag_merges_logic(
         );
 
         let client = reqwest::Client::new();
+        // "format": "json" は指定しないこと。
+        // thinking 対応モデル（既定の qwen3:14b を含む）に対して指定すると応答が `{}` に縮退し、
+        // synonyms が常に空になってLLM同義語判定が丸ごと無効化される（2026-07-29 実測）。
+        // done_reason は "stop"（正常終了）で返るためエラーにもならず静かに壊れる。
+        // JSON の抽出は下の find('{') / rfind('}') が担うので format 指定は不要。
+        // 検証方法: tools/prompt-check/README.md
         let req_body = serde_json::json!({
             "model": ollama_text_model,
             "prompt": prompt,
-            "stream": false,
-            "format": "json"
+            "stream": false
         });
 
         if let Ok(res) = client.post(format!("{}/api/generate", ollama_url)).json(&req_body).send().await {
