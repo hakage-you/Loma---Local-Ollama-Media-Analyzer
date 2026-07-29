@@ -146,7 +146,21 @@ impl RetryingLlmProvider {
                 }
             }
 
-            sleep(Duration::from_secs(1)).await;
+            // 1秒をまとめて待つとキャンセル検知が最大1秒遅れるため、100ms 刻みで待機する
+            for _ in 0..10 {
+                if let Ok(lock) = self.context.lock() {
+                    if let Some(ref ctx) = *lock {
+                        if ctx.cancel_flag.load(Ordering::Relaxed) {
+                            crate::logger::log_info(&format!(
+                                "[Scan Cancelled] Cancelled during the '{}' wait (attempt {}/{}, {}s of the backoff remaining).",
+                                reason_label, attempt, max_att, remaining
+                            ));
+                            return Err(anyhow!("Scan cancelled during API retry wait"));
+                        }
+                    }
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
         }
         Ok(())
     }

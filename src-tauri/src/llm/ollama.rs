@@ -133,48 +133,62 @@ impl OllamaProvider {
         self.learned_num_ctx.fetch_max(num_ctx, Ordering::Relaxed);
     }
 
-    fn prepare_base64_image(&self, image_path: &Path) -> Result<String> {
-        match image::open(image_path) {
-            Ok(img) => {
-                // 長辺を max_image_edge まで縮小してから送る。
-                // 12MP のスマホ写真をそのまま送ると画像だけで約4000トークンを消費し、
-                // 生成に使えるコンテキストを圧迫するため。
-                let img = if self.max_image_edge > 0 {
-                    let (w, h) = (img.width(), img.height());
-                    if w.max(h) > self.max_image_edge {
-                        let resized = img.resize(
-                            self.max_image_edge,
-                            self.max_image_edge,
-                            image::imageops::FilterType::Triangle,
-                        );
-                        crate::logger::log_debug(&format!(
-                            "[Ollama Debug] Downscaled image {}x{} -> {}x{}",
-                            w, h, resized.width(), resized.height()
-                        ));
-                        resized
-                    } else {
-                        img
-                    }
+    /// 画像のデコード・縮小・JPEG エンコードは数百ms〜秒単位の CPU 処理のため、
+    /// 非同期ランタイムのワーカースレッドを占有しないようブロッキングプールへ逃がす。
+    /// （占有すると `tokio::select!` によるキャンセル検知や他のコマンドまで待たされる）
+    async fn prepare_base64_image_async(&self, image_path: &Path) -> Result<String> {
+        let path = image_path.to_path_buf();
+        let max_edge = self.max_image_edge;
+        tokio::task::spawn_blocking(move || prepare_base64_image(&path, max_edge))
+            .await
+            .map_err(|e| anyhow!("Image encoding task failed: {}", e))?
+    }
+}
+
+/// 画像を（必要なら縮小して）JPEG base64 化する。CPU バウンドな同期処理。
+fn prepare_base64_image(image_path: &Path, max_image_edge: u32) -> Result<String> {
+    match image::open(image_path) {
+        Ok(img) => {
+            // 長辺を max_image_edge まで縮小してから送る。
+            // 12MP のスマホ写真をそのまま送ると画像だけで約4000トークンを消費し、
+            // 生成に使えるコンテキストを圧迫するため。
+            let img = if max_image_edge > 0 {
+                let (w, h) = (img.width(), img.height());
+                if w.max(h) > max_image_edge {
+                    let resized = img.resize(
+                        max_image_edge,
+                        max_image_edge,
+                        image::imageops::FilterType::Triangle,
+                    );
+                    crate::logger::log_debug(&format!(
+                        "[Ollama Debug] Downscaled image {}x{} -> {}x{}",
+                        w, h, resized.width(), resized.height()
+                    ));
+                    resized
                 } else {
                     img
-                };
-
-                let rgb_img = img.to_rgb8();
-                let mut buffer = std::io::Cursor::new(Vec::new());
-                if rgb_img.write_to(&mut buffer, image::ImageFormat::Jpeg).is_ok() {
-                    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buffer.into_inner()))
-                } else {
-                    let img_bytes = fs::read(image_path)?;
-                    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
                 }
-            }
-            Err(_) => {
+            } else {
+                img
+            };
+
+            let rgb_img = img.to_rgb8();
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            if rgb_img.write_to(&mut buffer, image::ImageFormat::Jpeg).is_ok() {
+                Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buffer.into_inner()))
+            } else {
                 let img_bytes = fs::read(image_path)?;
                 Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
             }
         }
+        Err(_) => {
+            let img_bytes = fs::read(image_path)?;
+            Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
+        }
     }
+}
 
+impl OllamaProvider {
     /// 1回分の /api/generate 呼び出し。レスポンスは統計情報付きで返す。
     async fn call_generate(
         &self,
@@ -323,7 +337,7 @@ impl LlmProvider for OllamaProvider {
     }
 
     async fn analyze_image(&self, image_path: &Path) -> Result<AnalysisResult> {
-        let base64_img = self.prepare_base64_image(image_path)?;
+        let base64_img = self.prepare_base64_image_async(image_path).await?;
 
         let (prompt_type, prompt) =
             get_vlm_prompt_info("Ollama", &self.model_name, &self.prompt_config);
@@ -346,7 +360,7 @@ impl LlmProvider for OllamaProvider {
         let mut base64_images = Vec::new();
         for path in frame_paths {
             if path.exists() {
-                if let Ok(b64) = self.prepare_base64_image(path) {
+                if let Ok(b64) = self.prepare_base64_image_async(path).await {
                     base64_images.push(b64);
                 }
             }
